@@ -32,6 +32,7 @@ sudo cp -f "$ROOT_DIR/www/listen/listen.html" "$WEBROOT/listen/listen.html" 2>/d
 sudo cp -f "$ROOT_DIR/www/listen/status.php" "$WEBROOT/listen/status.php"
 sudo cp -f "$ROOT_DIR/www/listen/admin.php" "$WEBROOT/listen/admin.php"
 sudo cp -f "$ROOT_DIR/www/listen/version.php" "$WEBROOT/listen/version.php"
+sudo cp -f "$ROOT_DIR/www/listen/sse.php" "$WEBROOT/listen/sse.php" 2>/dev/null || true
 sudo cp -f "$ROOT_DIR/www/listen/logo.png" "$WEBROOT/listen/logo.png" 2>/dev/null || true
 sudo cp -f "$ROOT_DIR/VERSION" "$WEBROOT/listen/VERSION" 2>/dev/null || true
 
@@ -57,6 +58,21 @@ elif [[ -L "$WEBROOT/music" ]]; then
   fi
 fi
 sudo chmod -R a+rX "$MUSIC_DIR" 2>/dev/null || true
+
+# Create audio-fseq directory for SSE companion files
+AUDIO_FSEQ_DIR="/home/fpp/media/audio-fseq"
+sudo mkdir -p "$AUDIO_FSEQ_DIR"
+sudo chown fpp:fpp "$AUDIO_FSEQ_DIR"
+echo "[install] Audio FSEQ directory: $AUDIO_FSEQ_DIR"
+
+# Deploy tools
+PLUGIN_DIR="/home/fpp/media/plugins/fpp-eavesdrop"
+if [[ -f "$ROOT_DIR/tools/audio2fseq.py" ]]; then
+  sudo mkdir -p "$PLUGIN_DIR/tools"
+  sudo cp -f "$ROOT_DIR/tools/audio2fseq.py" "$PLUGIN_DIR/tools/audio2fseq.py"
+  sudo chmod +x "$PLUGIN_DIR/tools/audio2fseq.py"
+  echo "[install] Deployed audio2fseq.py encoder"
+fi
 
 # Create config directory
 echo "[install] Setting up listener config..."

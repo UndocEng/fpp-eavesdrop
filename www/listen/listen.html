@@ -127,7 +127,13 @@
 
       <h3 class="section-title" style="margin-top:12px;">Sync Settings</h3>
 
-      <p class="small" style="margin-top:0;">Hard seek threshold (jump to correct position when error exceeds this)</p>
+      <p class="small" style="margin-top:0;">Sync mode</p>
+      <select id="syncMode">
+        <option value="poll" selected>HTTP Polling (standard)</option>
+        <option value="sse">SSE Frame-Lock (audio in FSEQ)</option>
+      </select>
+
+      <p class="small" style="margin-top:10px;">Hard seek threshold (HTTP polling mode only)</p>
       <select id="seekThreshold">
         <option value="2.0">Relaxed — &gt; 2.0 s</option>
         <option value="1.0" selected>Normal — &gt; 1.0 s</option>
@@ -142,6 +148,16 @@
         <div class="kv"><div class="k">Corrections</div><div class="v" id="learnCount">&mdash;</div></div>
       </div>
       <button class="btn-sm" id="resetLearning">Reset Learning Data</button>
+
+      <div id="sseStats" style="display:none; margin-top:14px;">
+        <h3 class="section-title">SSE Frame-Lock Stats</h3>
+        <div class="grid">
+          <div class="kv"><div class="k">SSE Status</div><div class="v" id="sseStatus">&mdash;</div></div>
+          <div class="kv"><div class="k">Buffer</div><div class="v" id="sseBuffer">&mdash;</div></div>
+          <div class="kv"><div class="k">Frames Rx</div><div class="v" id="sseFrames">&mdash;</div></div>
+          <div class="kv"><div class="k">Drops</div><div class="v" id="sseDrops">&mdash;</div></div>
+        </div>
+      </div>
 
       <div id="wifiSection">
         <h3 class="section-title" style="margin-top:18px;">WiFi AP Settings</h3>
@@ -183,6 +199,12 @@
   const learnDriftEl = document.getElementById("learnDrift");
   const learnCountEl = document.getElementById("learnCount");
   const resetLearningBtn = document.getElementById("resetLearning");
+  const syncModeEl = document.getElementById("syncMode");
+  const sseStatsEl = document.getElementById("sseStats");
+  const sseStatusEl = document.getElementById("sseStatus");
+  const sseBufferEl = document.getElementById("sseBuffer");
+  const sseFramesEl = document.getElementById("sseFrames");
+  const sseDropsEl = document.getElementById("sseDrops");
 
   // ====== Persistent learning store ======
   function loadLearning(){
@@ -222,6 +244,19 @@
   let pollTimer = null;
   let haveMetadata = false;
   let lastSeekMs = 0;
+
+  // SSE Frame-Lock state (declared early, used by sync/mute handlers)
+  let sseActive = false;
+  let sseEventSource = null;
+  let sseAudioCtx = null;
+  let sseScriptNode = null;
+  let sseRingBuffer = null;
+  let sseRingWrite = 0;
+  let sseRingRead = 0;
+  let sseRingSize = 0;
+  let sseFrameCount = 0;
+  let sseDropCount = 0;
+  let sseFppHost = "";
 
   // Clock offset estimation
   let clockOffset = 0;
@@ -359,7 +394,22 @@
 
   // ====== Sync ======
   function sync(msg){
+    // In SSE mode, still update track name and state from polling, but skip audio sync
     trackEl.textContent = msg.base || "\u2014";
+
+    if(sseActive){
+      // SSE mode: polling only provides metadata, audio is frame-locked via SSE
+      if(msg.state === "stop" || !msg.base){
+        setState("Idle (SSE)", null);
+      } else if(msg.state === "pause"){
+        setState("Paused (SSE)", true);
+      } else {
+        setState("Playing (SSE)", true);
+      }
+      errEl.textContent = "frame-locked";
+      rateEl.textContent = "1.000x";
+      return;
+    }
 
     // --- Stop state: pause and reset ---
     if(msg.state === "stop" || !msg.base){
@@ -474,6 +524,11 @@
     muted = !muted;
     muteBtn.textContent = muted ? "Unmute" : "Mute";
     audio.muted = muted;
+    // Also mute/unmute SSE audio
+    if(sseAudioCtx){
+      if(muted) sseAudioCtx.suspend();
+      else sseAudioCtx.resume();
+    }
   });
 
   resyncBtn.addEventListener("click", () => {
@@ -500,8 +555,13 @@
   // Init learning UI
   updateLearningUI();
 
-  // Start polling immediately
+  // Start polling immediately (always runs for metadata even in SSE mode)
   startPolling();
+
+  // Init SSE mode if previously selected
+  if(syncModeEl.value === "sse"){
+    setSyncMode("sse");
+  }
 
   // ====== Admin: Playback Controls ======
   function showStatus(el, msg, ok){
@@ -578,6 +638,225 @@
       showStatus(seqStatus, res.success ? "Stopped" : (res.error || "Failed"), res.success);
     } catch(e){ showStatus(seqStatus, "Network error", false); }
     stopSeqBtn.disabled = false; stopSeqBtn.textContent = "Stop";
+  });
+
+  // ====== SSE Frame-Lock Audio Decoder ======
+  const SSE_URL = "./sse.php";
+  const SSE_SAMPLE_RATE = 44100;
+  const SSE_FPS = 40;
+  const SSE_SAMPLES_PER_FRAME = Math.floor(SSE_SAMPLE_RATE / SSE_FPS); // 1102
+  const SSE_CHANNELS_PER_FRAME = 2 + (SSE_SAMPLES_PER_FRAME * 2);      // 2206
+  const SSE_SYNC_HI = 0xAA;
+  const SSE_SYNC_LO = 0x55;
+
+  function sseInitAudio(){
+    if(sseAudioCtx) return;
+    sseAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SSE_SAMPLE_RATE });
+
+    // Ring buffer: hold ~2 seconds of audio
+    sseRingSize = SSE_SAMPLE_RATE * 2;
+    sseRingBuffer = new Float32Array(sseRingSize);
+    sseRingWrite = 0;
+    sseRingRead = 0;
+
+    // ScriptProcessorNode for audio output (widely compatible)
+    const bufSize = 2048;
+    sseScriptNode = sseAudioCtx.createScriptProcessor(bufSize, 0, 1);
+    sseScriptNode.onaudioprocess = function(e){
+      const output = e.outputBuffer.getChannelData(0);
+      for(let i = 0; i < output.length; i++){
+        if(sseRingRead < sseRingWrite){
+          output[i] = sseRingBuffer[sseRingRead % sseRingSize];
+          sseRingRead++;
+        } else {
+          output[i] = 0; // underrun — silence
+        }
+      }
+    };
+    sseScriptNode.connect(sseAudioCtx.destination);
+  }
+
+  function sseDecodePCMFrame(bytes){
+    // bytes: Uint8Array of channel data for one frame
+    // Validate sync marker
+    if(bytes.length < 4) return null;
+    if(bytes[0] !== SSE_SYNC_HI || bytes[1] !== SSE_SYNC_LO) return null;
+
+    // Calculate samples from actual data length
+    const numSamples = Math.floor((bytes.length - 2) / 2);
+    const samples = new Float32Array(numSamples);
+    for(let i = 0; i < numSamples; i++){
+      const off = 2 + (i * 2);
+      const hi = bytes[off];
+      const lo = bytes[off + 1];
+      let val = (hi << 8) | lo;
+      // Convert unsigned back to signed 16-bit
+      if(val >= 32768) val -= 65536;
+      samples[i] = val / 32768.0; // normalize to [-1, 1]
+    }
+    return samples;
+  }
+
+  function ssePushSamples(samples){
+    if(!sseRingBuffer) return;
+    for(let i = 0; i < samples.length; i++){
+      sseRingBuffer[sseRingWrite % sseRingSize] = samples[i];
+      sseRingWrite++;
+    }
+    // Prevent buffer overflow: if write gets too far ahead, advance read
+    if(sseRingWrite - sseRingRead > sseRingSize){
+      sseRingRead = sseRingWrite - sseRingSize;
+      sseDropCount++;
+    }
+  }
+
+  function sseHandleFrame(event){
+    try {
+      // Base64 decode the frame data from sse.php
+      const raw = atob(event.data);
+      const bytes = new Uint8Array(raw.length);
+      for(let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+
+      const samples = sseDecodePCMFrame(bytes);
+      if(samples){
+        ssePushSamples(samples);
+        sseFrameCount++;
+      }
+    } catch(e){
+      // Ignore parse errors
+    }
+  }
+
+  function sseConnect(){
+    const url = SSE_URL + "?channels=" + SSE_CHANNELS_PER_FRAME + "&fps=" + SSE_FPS;
+    sseStatusEl.textContent = "Connecting...";
+
+    try {
+      sseEventSource = new EventSource(url);
+
+      sseEventSource.onopen = function(){
+        sseStatusEl.textContent = "Connected";
+        sseStatusEl.style.color = "var(--ok)";
+        sseInitAudio();
+        if(sseAudioCtx && sseAudioCtx.state === "suspended"){
+          sseAudioCtx.resume();
+        }
+      };
+
+      // Named events from sse.php
+      sseEventSource.addEventListener("frame", sseHandleFrame);
+
+      sseEventSource.addEventListener("seq_open", function(e){
+        // FSEQ file opened — log metadata
+        try {
+          const info = JSON.parse(e.data);
+          sseStatusEl.textContent = "Playing: " + (info.file || "?");
+          sseStatusEl.style.color = "var(--ok)";
+        } catch(_){}
+      });
+
+      sseEventSource.addEventListener("idle", function(){
+        sseStatusEl.textContent = "Idle (waiting)";
+        sseStatusEl.style.color = "var(--muted)";
+      });
+
+      sseEventSource.addEventListener("no_audio", function(e){
+        try {
+          const info = JSON.parse(e.data);
+          sseStatusEl.textContent = info.msg || "No audio FSEQ";
+          sseStatusEl.style.color = "var(--muted)";
+        } catch(_){
+          sseStatusEl.textContent = "No audio FSEQ";
+          sseStatusEl.style.color = "var(--muted)";
+        }
+      });
+
+      sseEventSource.addEventListener("error", function(e){
+        if(e.data){
+          try {
+            const info = JSON.parse(e.data);
+            sseStatusEl.textContent = "Error: " + (info.msg || "unknown");
+          } catch(_){
+            sseStatusEl.textContent = "SSE error";
+          }
+        } else {
+          sseStatusEl.textContent = "Disconnected";
+        }
+        sseStatusEl.style.color = "var(--bad)";
+      });
+
+      sseEventSource.onerror = function(){
+        sseStatusEl.textContent = "Disconnected";
+        sseStatusEl.style.color = "var(--bad)";
+      };
+    } catch(e){
+      sseStatusEl.textContent = "Failed: " + e.message;
+      sseStatusEl.style.color = "var(--bad)";
+    }
+  }
+
+  function sseDisconnect(){
+    if(sseEventSource){
+      sseEventSource.close();
+      sseEventSource = null;
+    }
+    if(sseScriptNode){
+      sseScriptNode.disconnect();
+      sseScriptNode = null;
+    }
+    if(sseAudioCtx){
+      sseAudioCtx.close();
+      sseAudioCtx = null;
+    }
+    sseRingBuffer = null;
+    sseRingWrite = 0;
+    sseRingRead = 0;
+    sseFrameCount = 0;
+    sseDropCount = 0;
+    sseStatusEl.textContent = "--";
+    sseStatusEl.style.color = "";
+  }
+
+  function sseUpdateStats(){
+    if(!sseActive) return;
+    const buffered = sseRingWrite - sseRingRead;
+    const bufMs = Math.round((buffered / SSE_SAMPLE_RATE) * 1000);
+    sseBufferEl.textContent = bufMs + " ms";
+    sseFramesEl.textContent = sseFrameCount.toString();
+    sseDropsEl.textContent = sseDropCount.toString();
+  }
+
+  // SSE stats update timer
+  let sseStatsTimer = null;
+
+  function setSyncMode(mode){
+    if(mode === "sse"){
+      // Switch to SSE mode
+      sseActive = true;
+      sseStatsEl.style.display = "";
+      // Pause HTTP polling audio
+      if(!audio.paused) audio.pause();
+      audio.style.display = "none";
+      sseConnect();
+      sseStatsTimer = setInterval(sseUpdateStats, 250);
+      setState("SSE Mode", true);
+    } else {
+      // Switch to HTTP polling mode
+      sseActive = false;
+      sseStatsEl.style.display = "none";
+      audio.style.display = "";
+      sseDisconnect();
+      if(sseStatsTimer){ clearInterval(sseStatsTimer); sseStatsTimer = null; }
+    }
+  }
+
+  // Restore saved sync mode
+  if(learned.syncMode === "sse") syncModeEl.value = "sse";
+
+  syncModeEl.addEventListener("change", () => {
+    learned.syncMode = syncModeEl.value;
+    saveLearning(learned);
+    setSyncMode(syncModeEl.value);
   });
 
   // ====== Options: Toggle ======

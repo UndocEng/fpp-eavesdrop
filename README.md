@@ -247,8 +247,10 @@ rm -rf /home/fpp/fpp-eavesdrop
 | `www/listen/index.html` | Redirects to listen.html |
 | `www/listen/status.php` | Returns current FPP playback status as JSON (polled 4x/second) |
 | `www/listen/admin.php` | Handles start/stop commands and WiFi password changes |
+| `www/listen/sse.php` | SSE relay — reads companion audio FSEQ and streams frames to browser |
 | `www/listen/version.php` | Returns the FPP version number |
 | `www/listen/logo.png` | Undocumented Engineer logo |
+| `tools/audio2fseq.py` | Encodes audio (WAV/MP3) into FSEQ v2 channel data for SSE mode |
 | `server/listener-ap.sh` | Script that starts the WiFi hotspot (hostapd + dnsmasq) |
 | `server/listener-ap.service` | Systemd service file for auto-starting the hotspot on boot |
 | `install.sh` | Installs everything |
@@ -258,10 +260,27 @@ rm -rf /home/fpp/fpp-eavesdrop
 
 ## Technical Details (for developers)
 
+### HTTP Polling Sync (standard)
+
 - Audio sync uses 250ms polling of FPP's `/api/fppd/status` endpoint
 - Clock offset between phone and server is estimated using request midpoint timing
-- Hard seek when error exceeds 1 second, with 2-second cooldown between seeks
+- Hard seek when error exceeds a configurable threshold (default 1s), with 2-second cooldown
+- Drift learning system estimates and compensates for client clock drift over time
+- Playback rate is continuously adjusted (soft sync) to converge on the correct position
 - FPP only provides whole-second precision for `seconds_played`, so sub-second error is expected
+
+### SSE Frame-Lock Sync (experimental — v2.2)
+
+An attempt to achieve frame-perfect audio sync by encoding audio PCM data directly into FSEQ channel data using `audio2fseq.py`, then streaming it to the browser via a PHP SSE relay (`sse.php`). The browser decodes the PCM samples via Web Audio API.
+
+**How it works:** The encoder converts audio into a standalone "companion" FSEQ file (e.g. `Elvis_Audio.fseq`) stored in `/home/fpp/media/audio-fseq/`. When FPP plays a light sequence, `sse.php` looks for a matching companion file and streams its frame data to the browser at the same position FPP is playing. The browser decodes the 16-bit PCM samples and plays them through a ScriptProcessorNode.
+
+**Verdict:** Not great. While the concept is sound (audio locked to FPP's master clock), the practical results are underwhelming — the PHP SSE relay still polls FPP's status API to determine position, so it doesn't eliminate the polling latency that causes drift in the first place. The audio quality through Web Audio API's ScriptProcessorNode also leaves something to be desired. HTTP polling mode with drift learning remains the better option for now.
+
+The SSE mode and `audio2fseq.py` encoder are included for experimentation. Select "SSE Frame-Lock" under Options to try it.
+
+### General
+
 - Playback starts via `POST /api/command` with the "Start Playlist" command (works for both playlists and `.fseq` sequences)
 - The WiFi AP runs hostapd on wlan1 with dnsmasq for DHCP and DNS (all queries resolve to the AP IP for captive portal behavior)
 - Config is stored at `/home/fpp/listen-sync/hostapd-listener.conf` and persists across reboots
