@@ -256,12 +256,59 @@ rm -rf /home/fpp/fpp-eavesdrop
 
 ---
 
+## How Audio Sync Works
+
+Eavesdrop uses a **Phase-Locked Loop (PLL)** to keep the phone's audio in sync with FPP's sequence playback. Instead of repeatedly jumping to the correct position (which causes audible pops), it smoothly adjusts the playback speed to converge on FPP's position and stay locked.
+
+### The Problem
+
+FPP plays sequences on the Pi. The phone plays the matching audio file independently. Two different clocks on two different devices will always drift apart — even a 0.1% difference means 300ms of drift over a 5-minute song. The sync engine's job is to measure and correct this drift in real time.
+
+### The Data Path
+
+1. **FPP API** (`/api/fppd/status`) reports `milliseconds_elapsed` — the current playback position with millisecond precision
+2. **status.php** on the Pi relays this to the browser as `pos_ms`, along with a `server_ms` timestamp captured at the midpoint of the API call
+3. **The browser** polls status.php 4 times per second (every 250ms) and estimates the server/client clock offset using request round-trip timing. If both devices have NTP (internet access), this offset converges to near-zero automatically
+
+### The PLL Algorithm
+
+The sync engine runs through three phases:
+
+**1. Anchor** (first poll after a track starts)
+- Preloads the audio file and waits for metadata
+- Seeks the audio element to FPP's current position
+- Starts playback at normal speed (1.0x)
+- Begins collecting timing samples
+
+**2. Calibrate** (~1.5 seconds, 6 polls)
+- Each poll records a pair: `{local_time, fpp_position}`
+- After 6 samples, computes a **least-squares linear regression** to find the *rate ratio* — how fast FPP's clock advances relative to the phone's clock
+- This ratio is typically very close to 1.0 (e.g., 1.0003) but the tiny difference matters over minutes of playback
+- Sets `playbackRate` to match the measured ratio
+
+**3. Locked** (ongoing, every 250ms)
+- Computes the **phase error**: `fpp_position - audio.currentTime`
+- Applies a **proportional correction**: `playbackRate = baseRate + 0.3 * phaseError`
+- This gently speeds up or slows down playback to close any remaining gap
+- The correction is clamped to +/-5% to stay imperceptible
+- Every 2 seconds, the **base rate is updated** via exponential moving average from observed drift, so the system *learns* the true clock relationship and corrections shrink over time
+- If error ever exceeds 2 seconds (e.g., user scrubbed on FPP), a hard seek is used as a fallback
+
+### Result
+
+After the initial 1.5-second calibration, the phone stays locked to FPP's position. The error display on the listen page shows the live phase error in milliseconds — it should hover near zero. The rate display shows the current `playbackRate`, which should be very close to 1.000x.
+
+---
+
 ## Technical Details (for developers)
 
 - Audio sync uses 250ms polling of FPP's `/api/fppd/status` endpoint
-- Clock offset between phone and server is estimated using request midpoint timing
-- Hard seek when error exceeds 1 second, with 2-second cooldown between seeks
-- FPP only provides whole-second precision for `seconds_played`, so sub-second error is expected
+- Position data comes from `milliseconds_elapsed` (not `seconds_played`, which is whole-seconds only)
+- Clock offset between phone and server is estimated using request round-trip midpoint timing, smoothed with a median filter + EMA
+- PLL calibration uses least-squares linear regression over 6 samples to compute the FPP/local clock rate ratio
+- Locked-phase correction: `playbackRate = baseRate + Kp * phaseError` (Kp=0.3, clamped to +/-5%)
+- Base rate learned via EMA (alpha=0.05) from 2-second observation windows
+- Hard seek fallback at >2 seconds of phase error, with 2-second cooldown
 - Playback starts via `POST /api/command` with the "Start Playlist" command (works for both playlists and `.fseq` sequences)
 - The WiFi AP runs hostapd on wlan1 with dnsmasq for DHCP and DNS (all queries resolve to the AP IP for captive portal behavior)
 - Config is stored at `/home/fpp/listen-sync/hostapd-listener.conf` and persists across reboots
