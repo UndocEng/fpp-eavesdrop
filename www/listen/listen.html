@@ -120,12 +120,31 @@
     <div class="footer" id="ver">Version: (loading&hellip;)</div>
   </div>
 
-  <!-- Options — collapsible, WiFi password only if wlan1 present -->
+  <!-- Options — collapsible -->
   <div class="card" id="optionsCard" style="display:none;">
     <div class="opts-toggle" id="optsToggle">&#9660; Options</div>
     <div class="opts-body" id="optsBody">
+
+      <h3 class="section-title" style="margin-top:12px;">Sync Settings</h3>
+
+      <p class="small" style="margin-top:0;">Hard seek threshold (jump to correct position when error exceeds this)</p>
+      <select id="seekThreshold">
+        <option value="2.0">Relaxed — &gt; 2.0 s</option>
+        <option value="1.0" selected>Normal — &gt; 1.0 s</option>
+        <option value="0.5">Tight — &gt; 0.5 s</option>
+        <option value="0.25">Strict — &gt; 0.25 s</option>
+        <option value="0.1">Precision — &gt; 0.1 s</option>
+        <option value="0">Disabled — soft sync only</option>
+      </select>
+
+      <div class="grid" style="margin-top:12px;">
+        <div class="kv"><div class="k">Learned Drift</div><div class="v" id="learnDrift">&mdash;</div></div>
+        <div class="kv"><div class="k">Corrections</div><div class="v" id="learnCount">&mdash;</div></div>
+      </div>
+      <button class="btn-sm" id="resetLearning">Reset Learning Data</button>
+
       <div id="wifiSection">
-        <h3 class="section-title" style="margin-top:12px;">WiFi AP Settings</h3>
+        <h3 class="section-title" style="margin-top:18px;">WiFi AP Settings</h3>
 
         <p class="small" style="margin-top:0;">Network name (SSID)</p>
         <input type="text" id="newSSID" placeholder="SHOW_AUDIO" autocomplete="off">
@@ -146,8 +165,8 @@
   // ====== Config ======
   const STATUS_URL = "./status.php";
   const POLL_MS = 250;
-  const HARD_SEEK_S = 1.0;
   const SEEK_COOLDOWN_MS = 2000;
+  const STORAGE_KEY = "eavesdrop_sync";
 
   // ====== UI refs ======
   const dot = document.getElementById("dot");
@@ -160,6 +179,41 @@
   const muteBtn = document.getElementById("mute");
   const resyncBtn = document.getElementById("resync");
   const audio = document.getElementById("player");
+  const seekThresholdEl = document.getElementById("seekThreshold");
+  const learnDriftEl = document.getElementById("learnDrift");
+  const learnCountEl = document.getElementById("learnCount");
+  const resetLearningBtn = document.getElementById("resetLearning");
+
+  // ====== Persistent learning store ======
+  function loadLearning(){
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if(raw){ const d = JSON.parse(raw); return d && typeof d === "object" ? d : {}; }
+    } catch(_){}
+    return {};
+  }
+  function saveLearning(obj){
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(obj)); } catch(_){}
+  }
+
+  let learned = loadLearning();
+  // learned.driftRate   = ms/sec the client drifts from server (positive = client runs fast)
+  // learned.driftWeight = confidence weight (number of samples that built this estimate)
+  // learned.corrections = total hard seeks performed (lifetime)
+  // learned.seekThreshold = last chosen threshold
+  if(typeof learned.driftRate !== "number") learned.driftRate = 0;
+  if(typeof learned.driftWeight !== "number") learned.driftWeight = 0;
+  if(typeof learned.corrections !== "number") learned.corrections = 0;
+  if(typeof learned.seekThreshold === "string") seekThresholdEl.value = learned.seekThreshold;
+
+  function getSeekThreshold(){
+    return parseFloat(seekThresholdEl.value);
+  }
+
+  seekThresholdEl.addEventListener("change", () => {
+    learned.seekThreshold = seekThresholdEl.value;
+    saveLearning(learned);
+  });
 
   // ====== State ======
   let audioUnlocked = false;
@@ -174,6 +228,12 @@
   let clockOffsetValid = false;
   const OFFSET_HISTORY_SIZE = 8;
   let offsetHistory = [];
+
+  // Drift learning — per-session observations
+  let driftSamples = [];           // {t: timestamp, err: errorSec}
+  const DRIFT_WINDOW_MS = 15000;   // measure drift over 15-second windows
+  const DRIFT_SAMPLE_MIN = 10;     // need at least 10 samples to estimate
+  let sessionDriftRate = null;     // ms/sec drift observed this session
 
   function setDot(mode){
     dot.classList.remove("ok","bad");
@@ -221,6 +281,48 @@
     }
   }
 
+  // ====== Drift learning ======
+  function recordDriftSample(errSec){
+    const now = performance.now();
+    driftSamples.push({ t: now, err: errSec });
+    // Trim old samples outside the window
+    const cutoff = now - DRIFT_WINDOW_MS;
+    while(driftSamples.length > 0 && driftSamples[0].t < cutoff) driftSamples.shift();
+
+    if(driftSamples.length >= DRIFT_SAMPLE_MIN){
+      // Linear regression: drift rate = slope of error over time
+      const n = driftSamples.length;
+      let sumT = 0, sumE = 0, sumTE = 0, sumTT = 0;
+      for(let i = 0; i < n; i++){
+        const t = (driftSamples[i].t - driftSamples[0].t) / 1000; // seconds
+        const e = driftSamples[i].err * 1000; // ms
+        sumT += t; sumE += e; sumTE += t * e; sumTT += t * t;
+      }
+      const denom = n * sumTT - sumT * sumT;
+      if(Math.abs(denom) > 0.001){
+        sessionDriftRate = (n * sumTE - sumT * sumE) / denom; // ms/sec
+
+        // Blend session observation into persistent learned rate
+        // Use exponential weighting: new observations matter more when learned weight is low
+        const blendAlpha = Math.min(0.5, 1 / (1 + learned.driftWeight * 0.1));
+        learned.driftRate = learned.driftRate * (1 - blendAlpha) + sessionDriftRate * blendAlpha;
+        learned.driftWeight = Math.min(learned.driftWeight + 0.1, 200);
+        saveLearning(learned);
+      }
+    }
+  }
+
+  function updateLearningUI(){
+    const dr = learned.driftRate;
+    if(learned.driftWeight > 0){
+      const sign = dr >= 0 ? "+" : "";
+      learnDriftEl.textContent = sign + dr.toFixed(2) + " ms/s";
+    } else {
+      learnDriftEl.textContent = "learning...";
+    }
+    learnCountEl.textContent = learned.corrections.toString();
+  }
+
   // ====== Compute FPP target position in seconds ======
   function getTargetSec(msg){
     const nowMs = Date.now();
@@ -232,8 +334,27 @@
       if(!Number.isFinite(elapsed)) elapsed = 0;
       elapsed = clamp(elapsed, 0, 1500);
       targetMs = rawPosMs + elapsed;
+
+      // Apply learned drift compensation: if we know the client drifts,
+      // pre-correct by nudging the target in the opposite direction.
+      // Scale by how long since we last hard-seeked (drift accumulates over time).
+      if(learned.driftWeight > 1 && lastSeekMs > 0){
+        const sinceSyncSec = (nowMs - lastSeekMs) / 1000;
+        // driftRate is ms/sec the error grows; subtract it to compensate
+        targetMs -= learned.driftRate * sinceSyncSec;
+      }
     }
     return targetMs / 1000.0;
+  }
+
+  // ====== Soft sync: compute ideal playbackRate to converge ======
+  function computeSoftRate(errSec){
+    // Proportional correction: adjust rate to close the gap over ~2 seconds
+    // errSec > 0 means we're behind → speed up; errSec < 0 → slow down
+    const correction = clamp(errSec / 2.0, -0.05, 0.05);
+    // Add learned drift compensation as a steady-state offset
+    const driftComp = (learned.driftWeight > 1) ? (learned.driftRate / -1000) : 0;
+    return clamp(1.0 + correction + driftComp, 0.9, 1.1);
   }
 
   // ====== Sync ======
@@ -247,6 +368,7 @@
       audio.playbackRate = 1.0;
       currentBase = "";
       haveMetadata = false;
+      driftSamples = [];
       setState("Idle", null);
       errEl.textContent = "\u2014";
       rateEl.textContent = "\u2014";
@@ -257,6 +379,7 @@
     if(msg.state === "pause"){
       if(!audio.paused) audio.pause();
       audio.playbackRate = 1.0;
+      driftSamples = [];
       setState("Paused", true);
       return;
     }
@@ -268,6 +391,7 @@
     if(msg.base && msg.base !== currentBase){
       currentBase = msg.base;
       haveMetadata = false;
+      driftSamples = [];
       audio.src = msg.mp3_url || "";
       audio.load();
       audio.addEventListener("loadedmetadata", function onMeta(){
@@ -285,21 +409,37 @@
     const errSec = targetSec - localSec;
 
     errEl.textContent = (errSec >= 0 ? "+" : "") + (errSec * 1000).toFixed(0) + " ms";
-    rateEl.textContent = audio.playbackRate.toFixed(3) + "x";
 
     const absErr = Math.abs(errSec);
     const nowMs = Date.now();
+    const threshold = getSeekThreshold();
 
-    if(absErr > HARD_SEEK_S && (nowMs - lastSeekMs) > SEEK_COOLDOWN_MS){
+    // Record error for drift learning (only when playing and not right after a seek)
+    if((nowMs - lastSeekMs) > SEEK_COOLDOWN_MS){
+      recordDriftSample(errSec);
+    }
+
+    // Hard seek: if enabled and error exceeds threshold
+    if(threshold > 0 && absErr > threshold && (nowMs - lastSeekMs) > SEEK_COOLDOWN_MS){
       audio.currentTime = clamp(targetSec, 0, Math.max(0, audio.duration - 0.1));
       audio.playbackRate = 1.0;
       lastSeekMs = nowMs;
+      learned.corrections++;
+      saveLearning(learned);
+      driftSamples = []; // reset drift window after a hard seek
       if(audio.paused && audioUnlocked) audio.play().catch(() => {});
+      rateEl.textContent = "1.000x (seek)";
+      updateLearningUI();
       return;
     }
 
+    // Soft sync: adjust playback rate to converge
+    const rate = computeSoftRate(errSec);
+    audio.playbackRate = rate;
+    rateEl.textContent = rate.toFixed(3) + "x";
+
     if(audio.paused && audioUnlocked) audio.play().catch(() => {});
-    audio.playbackRate = 1.0;
+    updateLearningUI();
   }
 
   // ====== Polling ======
@@ -339,12 +479,26 @@
   resyncBtn.addEventListener("click", () => {
     if(!haveMetadata || !currentBase) return;
     lastSeekMs = 0;
+    driftSamples = [];
+  });
+
+  resetLearningBtn.addEventListener("click", () => {
+    learned.driftRate = 0;
+    learned.driftWeight = 0;
+    learned.corrections = 0;
+    driftSamples = [];
+    sessionDriftRate = null;
+    saveLearning(learned);
+    updateLearningUI();
   });
 
   // Fetch version
   fetch("./version.php?t=" + Date.now()).then(r => r.json()).then(v => {
     verEl.textContent = "Eavesdrop v" + (v.eavesdrop || "?") + " | FPP v" + (v.fpp || "?");
   }).catch(() => { verEl.textContent = "Version: unknown"; });
+
+  // Init learning UI
+  updateLearningUI();
 
   // Start polling immediately
   startPolling();
@@ -395,10 +549,13 @@
         });
         seqSelect.appendChild(grp);
       }
-      // Show Options card only if wlan1 exists
+      // Always show Options card (sync settings are always relevant)
+      document.getElementById("optionsCard").style.display = "";
       if(res.has_wlan1){
-        document.getElementById("optionsCard").style.display = "";
         if(res.current_ssid) document.getElementById("newSSID").placeholder = res.current_ssid;
+      } else {
+        // Hide WiFi section if no wlan1
+        document.getElementById("wifiSection").style.display = "none";
       }
     } catch(e){ seqSelect.innerHTML = '<option value="">Failed to load</option>'; }
   })();
@@ -423,7 +580,7 @@
     stopSeqBtn.disabled = false; stopSeqBtn.textContent = "Stop";
   });
 
-  // ====== Options: WiFi Password ======
+  // ====== Options: Toggle ======
   const optsToggle = document.getElementById("optsToggle");
   const optsBody = document.getElementById("optsBody");
   optsToggle.addEventListener("click", () => {
