@@ -57,7 +57,7 @@
       border:1px solid rgba(255,255,255,.12); background:rgba(0,0,0,.18); color:var(--ink);
       cursor:pointer;
     }
-    input[type="password"]{
+    input[type="text"],input[type="password"]{
       width:100%; font-size:16px; padding:10px 12px; border-radius:10px;
       border:1px solid rgba(255,255,255,.12); background:rgba(0,0,0,.18); color:var(--ink);
     }
@@ -80,7 +80,7 @@
   <div class="header">
     <img src="logo.png" alt="Undocumented Engineer" />
     <h1>Show Audio</h1>
-    <p class="sub">Keep this page open during the show. Tap anywhere to enable audio.</p>
+    <p class="sub">Show owner controls. Tap anywhere to enable audio.</p>
   </div>
 
   <!-- Playback Control — always visible -->
@@ -125,8 +125,14 @@
     <div class="opts-toggle" id="optsToggle">&#9660; Options</div>
     <div class="opts-body" id="optsBody">
       <div id="wifiSection">
-        <h3 class="section-title" style="margin-top:12px;">WiFi AP Password</h3>
-        <p class="small" style="margin-top:0;">Change the SHOW_AUDIO access point password (8-63 characters).</p>
+        <h3 class="section-title" style="margin-top:12px;">WiFi AP Settings</h3>
+
+        <p class="small" style="margin-top:0;">Network name (SSID)</p>
+        <input type="text" id="newSSID" placeholder="SHOW_AUDIO" autocomplete="off">
+        <button class="btn-sm" id="changeSSID">Change SSID</button>
+        <div id="ssidStatus" class="status-msg"></div>
+
+        <p class="small" style="margin-top:14px;">Password (8-63 characters)</p>
         <input type="password" id="newPass" placeholder="New password" autocomplete="new-password">
         <button class="btn-sm" id="changePass">Change Password</button>
         <div id="passStatus" class="status-msg"></div>
@@ -336,8 +342,8 @@
   });
 
   // Fetch version
-  fetch("./version.php?t=" + Date.now()).then(r => r.text()).then(t => {
-    verEl.textContent = "Version: " + (t || "").trim();
+  fetch("./version.php?t=" + Date.now()).then(r => r.json()).then(v => {
+    verEl.textContent = "Eavesdrop v" + (v.eavesdrop || "?") + " | FPP v" + (v.fpp || "?");
   }).catch(() => { verEl.textContent = "Version: unknown"; });
 
   // Start polling immediately
@@ -392,6 +398,7 @@
       // Show Options card only if wlan1 exists
       if(res.has_wlan1){
         document.getElementById("optionsCard").style.display = "";
+        if(res.current_ssid) document.getElementById("newSSID").placeholder = res.current_ssid;
       }
     } catch(e){ seqSelect.innerHTML = '<option value="">Failed to load</option>'; }
   })();
@@ -424,6 +431,30 @@
     optsToggle.innerHTML = open ? "&#9650; Options" : "&#9660; Options";
   });
 
+  // -- SSID --
+  const newSSIDInput = document.getElementById("newSSID");
+  const changeSSIDBtn = document.getElementById("changeSSID");
+  const ssidStatus = document.getElementById("ssidStatus");
+
+  changeSSIDBtn.addEventListener("click", async () => {
+    const ssid = newSSIDInput.value.trim();
+    if(!ssid){ showStatus(ssidStatus, "Enter an SSID", false); return; }
+    if(ssid.length > 32){ showStatus(ssidStatus, "SSID must be 1-32 characters", false); return; }
+    changeSSIDBtn.disabled = true; changeSSIDBtn.textContent = "Changing...";
+    try {
+      const res = await adminPost({ action: "change_ssid", ssid: ssid });
+      if(res.success){
+        showStatus(ssidStatus, res.message || "SSID changed!", true);
+        newSSIDInput.value = "";
+        newSSIDInput.placeholder = ssid;
+      } else {
+        showStatus(ssidStatus, res.error || "Failed", false);
+      }
+    } catch(e){ showStatus(ssidStatus, "Network error", false); }
+    changeSSIDBtn.disabled = false; changeSSIDBtn.textContent = "Change SSID";
+  });
+
+  // -- Password --
   const newPassInput = document.getElementById("newPass");
   const changePassBtn = document.getElementById("changePass");
   const passStatus = document.getElementById("passStatus");

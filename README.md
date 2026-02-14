@@ -1,16 +1,18 @@
-# ChatGPT FPP Listener
+# FPP Eavesdrop
 
-A **show-owner developer tool** for Falcon Player (FPP). Lets visitors listen to your show audio on their phones, synced to your light show. Gives the show owner full control: start/stop sequences and playlists, manage the WiFi access point, all from one page.
+A **show-owner developer tool** for Falcon Player (FPP). Runs on the master and gives the show owner full control: start/stop sequences and playlists, monitor audio sync, and manage the WiFi access point — all from one password-protected page on your phone.
+
+> **This is NOT the visitor-facing listener.** For an open WiFi hotspot that lets your audience listen along, see [fpp-listener-sync](https://github.com/UndocEng/fpp-listener-sync) (runs on a remote). **Eavesdrop** runs on the master with unfettered API access, which is why its WiFi is WPA2 password-protected.
 
 ---
 
 ## What This Does
 
-1. Creates a dedicated WiFi hotspot (called **SHOW_AUDIO**) using a USB WiFi adapter
-2. When visitors connect to that hotspot and open any webpage, they get redirected to a **listen page**
-3. The listen page downloads the current show audio and keeps it synced to whatever FPP is playing
-4. The show owner can start/stop playlists and sequences right from that same page
-5. The show owner can change the WiFi password from the page (under Options)
+1. Creates a **password-protected** WiFi hotspot (called **SHOW_AUDIO**) using a USB WiFi adapter
+2. Serves a control page where the show owner can start/stop playlists and sequences
+3. Syncs show audio to the owner's phone so you can hear what your audience hears
+4. Lets you change the WiFi AP SSID and password from the page (under Options)
+5. Accessible from both the hotspot and your main network — if you know the master's IP, just add `/listen/` to it (e.g. `http://10.1.66.204/listen/`). No hotspot required.
 
 ---
 
@@ -71,11 +73,11 @@ cd /home/fpp
 ```
 
 ```bash
-git clone https://github.com/TNash-FPP/ChatGPT-fpp-listen.git
+git clone https://github.com/UndocEng/fpp-eavesdrop.git
 ```
 
 ```bash
-cd ChatGPT-fpp-listen
+cd fpp-eavesdrop
 ```
 
 ### Step 4: Run the installer
@@ -142,14 +144,6 @@ That's it! You're done.
 
 Tap the **Stop** button.
 
-### Listening (for visitors)
-
-Tell your visitors to:
-1. Connect to the **SHOW_AUDIO** WiFi (give them the password)
-2. Open any webpage — they'll be redirected to the listen page
-3. Tap anywhere on the page to enable audio
-4. Keep the page open during the show
-
 ### Changing the WiFi password
 
 1. On the listen page, scroll down and tap **Options**
@@ -159,11 +153,11 @@ Tell your visitors to:
 
 ### Accessing from your main network
 
-The listen page works on both networks:
+The control page works on both networks:
 - **WiFi hotspot:** `http://192.168.50.1/listen/`
 - **Main network:** `http://YOUR_FPP_IP/listen/`
 
-This is a developer tool, so there's no login required on your main network. The only security is the WPA2 password on the WiFi hotspot (wlan1).
+This is a developer/owner tool — no login is required on your main network. The WPA2 password on the hotspot (wlan1) is what keeps unauthorized users out. For visitor-facing audio, use [fpp-listener-sync](https://github.com/UndocEng/fpp-listener-sync) on a remote with an open WiFi AP.
 
 ---
 
@@ -211,7 +205,7 @@ This is an FPP output configuration issue, not a listener issue. Check:
 To get the latest version:
 
 ```bash
-cd /home/fpp/ChatGPT-fpp-listen
+cd /home/fpp/fpp-eavesdrop
 git pull
 sudo ./install.sh
 ```
@@ -225,7 +219,7 @@ Your WiFi password and settings will be preserved (the installer doesn't overwri
 To completely remove everything this project installed:
 
 ```bash
-cd /home/fpp/ChatGPT-fpp-listen
+cd /home/fpp/fpp-eavesdrop
 sudo ./uninstall.sh
 ```
 
@@ -240,7 +234,7 @@ This removes:
 After uninstalling, your FPP is exactly as it was before you installed this project. You can then delete the project folder:
 
 ```bash
-rm -rf /home/fpp/ChatGPT-fpp-listen
+rm -rf /home/fpp/fpp-eavesdrop
 ```
 
 ---

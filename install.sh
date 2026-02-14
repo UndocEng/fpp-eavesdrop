@@ -6,7 +6,7 @@ VERSION=$(cat "$ROOT_DIR/VERSION" 2>/dev/null || echo "unknown")
 
 echo ""
 echo "========================================="
-echo "  ChatGPT FPP Listener - v${VERSION}"
+echo "  FPP Eavesdrop - v${VERSION}"
 echo "========================================="
 echo ""
 
@@ -33,6 +33,7 @@ sudo cp -f "$ROOT_DIR/www/listen/status.php" "$WEBROOT/listen/status.php"
 sudo cp -f "$ROOT_DIR/www/listen/admin.php" "$WEBROOT/listen/admin.php"
 sudo cp -f "$ROOT_DIR/www/listen/version.php" "$WEBROOT/listen/version.php"
 sudo cp -f "$ROOT_DIR/www/listen/logo.png" "$WEBROOT/listen/logo.png" 2>/dev/null || true
+sudo cp -f "$ROOT_DIR/VERSION" "$WEBROOT/listen/VERSION" 2>/dev/null || true
 
 # Create index.html redirect if listen.html exists
 if [[ -f "$WEBROOT/listen/listen.html" ]]; then

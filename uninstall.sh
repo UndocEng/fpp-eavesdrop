@@ -3,7 +3,7 @@ set -euo pipefail
 
 echo ""
 echo "========================================="
-echo "  ChatGPT FPP Listener - Uninstall"
+echo "  FPP Eavesdrop - Uninstall"
 echo "========================================="
 echo ""
 
