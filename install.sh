@@ -63,66 +63,13 @@ echo "[install] Setting up listener config..."
 sudo mkdir -p "$LISTEN_SYNC"
 sudo chown fpp:fpp "$LISTEN_SYNC"
 
-# Deploy default hostapd config with WPA2 (if not already present)
-HOSTAPD_CONF="$LISTEN_SYNC/hostapd-listener.conf"
-if [[ ! -f "$HOSTAPD_CONF" ]]; then
-  sudo tee "$HOSTAPD_CONF" > /dev/null <<'EOF'
-interface=wlan1
-driver=nl80211
-ssid=SHOW_AUDIO
-hw_mode=g
-channel=6
-country_code=US
-wmm_enabled=1
-ieee80211n=1
-auth_algs=1
-ignore_broadcast_ssid=0
-ap_isolate=1
-
-# WPA2 configuration
-wpa=2
-wpa_passphrase=Listen123
-wpa_key_mgmt=WPA-PSK
-wpa_pairwise=CCMP
-rsn_pairwise=CCMP
-EOF
-  sudo chmod 644 "$HOSTAPD_CONF"
-  echo "[install] Default WiFi password: Listen123"
-else
-  echo "[install] Hostapd config exists, keeping current settings"
-fi
-
-# Configure sudoers for www-data (admin.php needs this)
-echo "[install] Configuring sudoers..."
-SUDOERS_FILE="/etc/sudoers.d/listener-sync"
-sudo tee "$SUDOERS_FILE" > /dev/null <<'EOF'
-# Allow www-data to manage listener AP config and service
-www-data ALL=(ALL) NOPASSWD: /usr/bin/tee /home/fpp/listen-sync/hostapd-listener.conf
-www-data ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart listener-ap.service
-EOF
-sudo chmod 440 "$SUDOERS_FILE"
-
-if sudo visudo -cf "$SUDOERS_FILE" > /dev/null 2>&1; then
-  echo "[install] Sudoers configured"
-else
-  echo "[ERROR] Invalid sudoers syntax! Removing."
-  sudo rm -f "$SUDOERS_FILE"
-  exit 1
-fi
+# Clean up legacy sudoers entry (no longer needed — WiFi AP removed in v3.2)
+sudo rm -f /etc/sudoers.d/listener-sync
 
 # Fix Windows line endings on shell scripts (in case cloned on Windows)
 if command -v sed >/dev/null 2>&1; then
   sed -i 's/\r$//' "$ROOT_DIR/server/listener-ap.sh" 2>/dev/null || true
   sed -i 's/\r$//' "$ROOT_DIR/server/ws-sync-server.py" 2>/dev/null || true
-fi
-
-# Deploy listener-ap systemd service
-if [[ -f "$ROOT_DIR/server/listener-ap.service" ]]; then
-  sudo cp "$ROOT_DIR/server/listener-ap.service" /etc/systemd/system/listener-ap.service
-  sudo chmod +x "$ROOT_DIR/server/listener-ap.sh"
-  sudo systemctl daemon-reload
-  sudo systemctl enable listener-ap 2>/dev/null || true
-  echo "[install] listener-ap service installed"
 fi
 
 # ====== WebSocket Sync Server ======
@@ -204,14 +151,18 @@ if command -v curl >/dev/null 2>&1; then
   fi
 fi
 
+# Get IP address for display
+LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+if [[ -z "$LOCAL_IP" ]]; then
+  LOCAL_IP="YOUR_FPP_IP"
+fi
+
 echo ""
 echo "========================================="
 echo "  Install complete!"
 echo "========================================="
-echo "  Page:     http://192.168.50.1/listen/"
-echo "  WiFi:     SHOW_AUDIO (WPA2)"
-echo "  Password: Listen123 (change via web UI)"
-echo "  WS Sync:  ws://192.168.50.1/ws"
+echo "  Page:  http://${LOCAL_IP}/listen/"
+echo "  Sync:  WebSocket (ws://${LOCAL_IP}/ws)"
 echo "========================================="
 if [[ "$TESTS_OK" != "true" ]]; then
   echo "  WARNING: Some self-tests failed."
