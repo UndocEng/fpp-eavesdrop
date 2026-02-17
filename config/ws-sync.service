@@ -1,0 +1,45 @@
+# =============================================================================
+# ws-sync.service -- WebSocket Sync Beacon Systemd Service
+# =============================================================================
+# Runs the Python WebSocket server that bridges FPP's playback state to
+# audience phones. Starts on boot, auto-restarts on crash.
+#
+# The server polls FPP's API every 100ms and broadcasts state to all
+# connected WebSocket clients. Also handles clock-sync pings and
+# receives sync telemetry reports from clients.
+#
+# Deployed to: /etc/systemd/system/ws-sync.service
+# View logs:   journalctl -u ws-sync -f
+# Restart:     sudo systemctl restart ws-sync
+# =============================================================================
+
+[Unit]
+Description=FPP WebSocket Sync Beacon
+# Start after networking and Apache (Apache proxies /ws to us)
+After=network.target apache2.service
+Wants=network.target
+
+[Service]
+Type=simple
+# Run as the 'fpp' user (not root) for security
+User=fpp
+Group=fpp
+ExecStart=/usr/bin/python3 /home/fpp/listen-sync/ws-sync-server.py
+# Auto-restart on crash with 3-second delay
+Restart=always
+RestartSec=3
+# Send stdout/stderr to systemd journal (view with journalctl -u ws-sync)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ws-sync
+
+# Resource limits for Pi 3B safety -- the server should be lightweight,
+# but these limits prevent runaway memory or CPU from affecting FPP.
+MemoryMax=64M
+CPUQuota=25%
+
+# Security: prevent the process from gaining new privileges (e.g., via setuid)
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
