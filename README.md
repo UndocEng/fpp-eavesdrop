@@ -23,7 +23,8 @@ This must be installed on your **master** FPP (the one in **player mode**), not 
 
 - Direct access to the music files in `/home/fpp/media/music/`
 - The FPP API at `127.0.0.1` to read playback status and start/stop playlists
-- Remotes don't store media locally — they only receive channel data from the master
+- Remotes don't have to store media locally — they only receive channel data from the master
+- No seperate USB wifi adapter is needed
 
 If your master controls the show, that's where this goes.
 
