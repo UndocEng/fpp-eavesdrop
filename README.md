@@ -1,18 +1,19 @@
 # FPP Eavesdrop
 
-A **show-owner developer tool** for Falcon Player (FPP). Runs on the master and gives the show owner full control: start/stop sequences and playlists, monitor audio sync, and manage the WiFi access point — all from one password-protected page on your phone.
+A **show-owner developer tool** for Falcon Player (FPP). Runs on the master Pi and gives you full control: start/stop sequences and playlists, and hear synchronized show audio on your phone — all from one page.
 
-> **This is NOT the visitor-facing listener.** For an open WiFi hotspot that lets your audience listen along, see [fpp-listener-sync](https://github.com/UndocEng/fpp-listener-sync) (runs on a remote). **Eavesdrop** runs on the master with unfettered API access, which is why its WiFi is WPA2 password-protected.
+> **Tested on FPP 9.4** (Raspberry Pi OS Bookworm). Should work on any FPP version that uses `/opt/fpp/www/` as its web root (FPP 6+).
+
+> **This is NOT the visitor-facing listener.** For an open WiFi hotspot that lets your audience listen along, see [fpp-listener-sync](https://github.com/UndocEng/fpp-listener-sync) (runs on a remote). **Eavesdrop** runs on the master with direct API access.
 
 ---
 
 ## What This Does
 
-1. Creates a **password-protected** WiFi hotspot (called **SHOW_AUDIO**) using a USB WiFi adapter
-2. Serves a control page where the show owner can start/stop playlists and sequences
-3. Syncs show audio to the owner's phone so you can hear what your audience hears
-4. Lets you change the WiFi AP SSID and password from the page (under Options)
-5. Accessible from both the hotspot and your main network — if you know the master's IP, just add `/listen/` to it (e.g. `http://10.1.66.204/listen/`). No hotspot required.
+1. Serves a control page where the show owner can start/stop playlists and sequences
+2. Syncs show audio to the owner's phone using an adaptive PLL with WebSocket transport
+3. Accessible from your show network — just navigate to `http://YOUR_FPP_IP/listen/`
+4. Auto-detects when sequences start from any source (FPP web UI, scheduler, API) and begins playing
 
 ---
 
@@ -31,21 +32,15 @@ If your master controls the show, that's where this goes.
 
 Before you start, make sure you have:
 
-- A **Raspberry Pi** running **Falcon Player (FPP) in player (master) mode** — any version that uses `/opt/fpp/www/` as its web root (FPP 6+)
-- A **USB WiFi adapter** that supports AP (access point) mode — most cheap USB adapters work. It needs to show up as `wlan1` when you plug it in
+- A **Raspberry Pi** running **Falcon Player (FPP) 9.x in player (master) mode**
 - Your FPP already has **sequences (.fseq files)** and matching **audio files (.mp3)** loaded
 - A computer on the same network as your FPP to run the install commands
-- Basic ability to type commands into a terminal (we'll walk you through every step)
 
 ---
 
 ## Step-by-Step Install
 
-### Step 1: Plug in the USB WiFi adapter
-
-Plug your USB WiFi adapter into one of the Pi's USB ports. It doesn't matter which one.
-
-### Step 2: Open a terminal to your FPP
+### Step 1: Open a terminal to your FPP
 
 You need to get a command line on your FPP. Pick one of these methods:
 
@@ -65,7 +60,7 @@ You need to get a command line on your FPP. Pick one of these methods:
 - Click **File Manager**
 - (This method only works for uploading files — you'll still need SSH for the install command)
 
-### Step 3: Download this project onto your FPP
+### Step 2: Download this project onto your FPP
 
 Once you're logged in via SSH, type these commands one at a time (press Enter after each one):
 
@@ -81,7 +76,7 @@ git clone https://github.com/UndocEng/fpp-eavesdrop.git
 cd fpp-eavesdrop
 ```
 
-### Step 4: Run the installer
+### Step 3: Run the installer
 
 ```bash
 sudo ./install.sh
@@ -90,43 +85,38 @@ sudo ./install.sh
 You should see output like this:
 ```
 =========================================
-  ChatGPT FPP Listener - v1.0
+  FPP Eavesdrop - v3.2
 =========================================
 
 [install] Web root: /opt/fpp/www
 [install] Deploying web files...
 [install] Web files deployed
 [install] Created /music symlink
-[install] Setting up listener config...
-[install] Default WiFi password: Listen123
-[install] Configuring sudoers...
-[install] Sudoers configured
-[install] listener-ap service installed
+[install] python3-websockets already installed
+[install] ws-sync-server.py deployed
+[install] ws-sync service installed and started
+[install] Apache listener config deployed
+[install] Apache restarted
+
+[install] Running self-tests...
+[test] ws-sync service: OK
+[test] ws-sync port 8080: OK (HTTP 426 = WebSocket expected)
 
 =========================================
   Install complete!
 =========================================
-  Page:     http://192.168.50.1/listen/
-  WiFi:     SHOW_AUDIO (WPA2)
-  Password: Listen123 (change via web UI)
+  Page:  http://YOUR_FPP_IP/listen/
+  Sync:  WebSocket (ws://YOUR_FPP_IP/ws)
 =========================================
 ```
 
-### Step 5: Start the WiFi hotspot
+### Step 4: Test it
 
-```bash
-sudo systemctl start listener-ap
-```
-
-This turns on the WiFi hotspot. It will also start automatically every time the Pi boots.
-
-### Step 6: Test it
-
-1. On your phone, look for a WiFi network called **SHOW_AUDIO**
-2. Connect to it using password **Listen123**
-3. Open your phone's browser and go to `http://192.168.50.1/listen/`
-4. You should see the Show Audio page with a Playback section at the top
-5. Select a sequence from the dropdown and tap **Start** — your lights and audio should begin
+1. On your phone (connected to the same network as your FPP), open the browser
+2. Go to `http://YOUR_FPP_IP/listen/`
+3. You should see the Show Audio page with a Playback section at the top
+4. Select a sequence from the dropdown and tap **Start** — your lights and audio should begin
+5. Tap anywhere on the page to unlock audio (required by mobile browsers on first visit)
 
 That's it! You're done.
 
@@ -136,47 +126,32 @@ That's it! You're done.
 
 ### Starting a show
 
-1. Open the listen page (either from the SHOW_AUDIO WiFi at `http://192.168.50.1/listen/` or from your main network at `http://YOUR_FPP_IP/listen/`)
+1. Open the listen page at `http://YOUR_FPP_IP/listen/`
 2. Pick a playlist or sequence from the dropdown
 3. Tap **Start**
 4. Audio will play through the phone speaker and lights will run on your display
+
+### Auto-detection
+
+The page automatically detects when a sequence is playing — even if started from FPP's web UI, the scheduler, or any other source. Just keep the page open and it will start syncing as soon as something plays.
 
 ### Stopping a show
 
 Tap the **Stop** button.
 
-### Changing the WiFi password
+### Debug info
 
-1. On the listen page, scroll down and tap **Options**
-2. Type a new password (must be 8-63 characters)
-3. Tap **Change Password**
-4. The WiFi hotspot will restart — everyone will need to reconnect with the new password
-
-### Accessing from your main network
-
-The control page works on both networks:
-- **WiFi hotspot:** `http://192.168.50.1/listen/`
-- **Main network:** `http://YOUR_FPP_IP/listen/`
-
-This is a developer/owner tool — no login is required on your main network. The WPA2 password on the hotspot (wlan1) is what keeps unauthorized users out. For visitor-facing audio, use [fpp-listener-sync](https://github.com/UndocEng/fpp-listener-sync) on a remote with an open WiFi AP.
+Tap the **Debug** checkbox at the bottom of the sync card to see live diagnostics: transport type, clock offset, PLL state, error history, and playback rate. The **Client Log** checkbox shows a running log of sync events.
 
 ---
 
 ## Troubleshooting
 
-### "I can't see the SHOW_AUDIO WiFi network"
-
-- Make sure your USB WiFi adapter is plugged in
-- Check if it's recognized: `ip link show wlan1` — you should see it listed
-- Make sure the service is running: `sudo systemctl status listener-ap`
-- Restart it: `sudo systemctl restart listener-ap`
-- Check the log: `journalctl -u listener-ap -n 30`
-
 ### "The page loads but I hear no audio"
 
 - On iPhone, check that the **ringer switch** (on the side of the phone) is not on silent
 - Turn up the **volume** on the phone
-- Tap anywhere on the page — mobile browsers require a tap before they'll play audio
+- Tap anywhere on the page — mobile browsers require a user gesture before they'll play audio
 - Check that you have `.mp3` files in `/home/fpp/media/music/` with the same name as your `.fseq` files (e.g. `Elvis.fseq` needs `Elvis.mp3`)
 
 ### "The sequence starts but the lights don't do anything"
@@ -186,18 +161,19 @@ This is an FPP output configuration issue, not a listener issue. Check:
 - Click **Input/Output Setup** > **Channel Outputs**
 - Make sure your output universes are **active** (checkbox enabled)
 - Make sure the output IP addresses are correct (not your FPP's own IP)
-- If you see a warning like "UDP Output set to send data to myself" — that means one of your outputs is pointed at the FPP itself. Change it to the correct controller IP
 
 ### "Audio is out of sync"
 
-- Tap the **Resync** button on the listen page
-- If it's consistently off, check that your Pi has the correct time (FPP usually handles this automatically)
+- Enable the Debug checkbox and watch the PLL converge — it takes ~12-14 seconds after a track starts
+- If error stays large, check that your Pi has the correct time (FPP usually handles this automatically)
+- The **Avg Error (2s)** field should hover near 0 once locked — typical steady-state is 5-25ms
 
-### "I can't connect to the WiFi anymore after changing the password"
+### "WebSocket not connecting"
 
-- The default password is `Listen123`
-- If you forgot your new password, SSH into the FPP and check: `cat /home/fpp/listen-sync/hostapd-listener.conf | grep wpa_passphrase`
-- To reset to default, edit the file: `sudo nano /home/fpp/listen-sync/hostapd-listener.conf`, change `wpa_passphrase=` to `Listen123`, save, then restart: `sudo systemctl restart listener-ap`
+- Check the ws-sync service: `sudo systemctl status ws-sync`
+- View logs: `journalctl -u ws-sync -f`
+- Test the port: `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/` — should return `426`
+- The page will automatically fall back to HTTP polling if WebSocket is unavailable
 
 ---
 
@@ -210,8 +186,6 @@ cd /home/fpp/fpp-eavesdrop
 git pull
 sudo ./install.sh
 ```
-
-Your WiFi password and settings will be preserved (the installer doesn't overwrite existing config).
 
 ---
 
@@ -227,12 +201,11 @@ sudo ./uninstall.sh
 This removes:
 - All web files from `/opt/fpp/www/listen/`
 - The `/music` symlink
-- The `listener-ap` systemd service (stopped and disabled)
-- The sudoers entry for the web UI
+- The `ws-sync` WebSocket service (stopped and disabled)
+- The Apache WebSocket proxy configuration
 - The config directory at `/home/fpp/listen-sync/`
-- Any running hostapd/dnsmasq processes started by the listener
 
-After uninstalling, your FPP is exactly as it was before you installed this project. You can then delete the project folder:
+After uninstalling, your FPP is exactly as it was before. You can then delete the project folder:
 
 ```bash
 rm -rf /home/fpp/fpp-eavesdrop
@@ -244,14 +217,15 @@ rm -rf /home/fpp/fpp-eavesdrop
 
 | File | What it does |
 |------|-------------|
-| `www/listen/listen.html` | The main page — playback controls, audio sync, options |
+| `www/listen/listen.html` | Main page — playback controls, audio sync, debug UI |
 | `www/listen/index.html` | Redirects to listen.html |
-| `www/listen/status.php` | Returns current FPP playback status as JSON (polled 4x/second) |
-| `www/listen/admin.php` | Handles start/stop commands and WiFi password changes |
-| `www/listen/version.php` | Returns the FPP version number |
+| `www/listen/status.php` | Returns current FPP playback status as JSON |
+| `www/listen/admin.php` | Handles start/stop commands |
+| `www/listen/version.php` | Returns version info |
 | `www/listen/logo.png` | Undocumented Engineer logo |
-| `server/listener-ap.sh` | Script that starts the WiFi hotspot (hostapd + dnsmasq) |
-| `server/listener-ap.service` | Systemd service file for auto-starting the hotspot on boot |
+| `server/ws-sync-server.py` | Python WebSocket server — bridges FPP status to clients at 100ms |
+| `config/ws-sync.service` | Systemd service for the WebSocket server |
+| `config/apache-listener.conf` | Apache config — proxies `/ws` to the WebSocket server |
 | `install.sh` | Installs everything |
 | `uninstall.sh` | Removes everything (restores FPP to original state) |
 
@@ -259,58 +233,56 @@ rm -rf /home/fpp/fpp-eavesdrop
 
 ## How Audio Sync Works
 
-Eavesdrop uses a **Phase-Locked Loop (PLL)** to keep the phone's audio in sync with FPP's sequence playback. Instead of repeatedly jumping to the correct position (which causes audible pops), it smoothly adjusts the playback speed to converge on FPP's position and stay locked.
+Eavesdrop uses an **adaptive Phase-Locked Loop (PLL)** to keep the phone's audio in sync with FPP's sequence playback. Instead of repeatedly jumping to the correct position (which causes audible pops), it smoothly adjusts the playback speed to converge on FPP's position and stay locked.
 
-### The Problem
+### Transport
 
-FPP plays sequences on the Pi. The phone plays the matching audio file independently. Two different clocks on two different devices will always drift apart — even a 0.1% difference means 300ms of drift over a 5-minute song. The sync engine's job is to measure and correct this drift in real time.
+The WebSocket server (`ws-sync-server.py`) polls FPP's API every 100ms and broadcasts state to all connected clients. The browser connects via WebSocket (proxied through Apache on port 80 at `/ws`), with automatic HTTP polling fallback if WebSocket is unavailable.
 
-### The Data Path
-
-1. **FPP API** (`/api/fppd/status`) reports `milliseconds_elapsed` — the current playback position with millisecond precision
-2. **status.php** on the Pi relays this to the browser as `pos_ms`, along with a `server_ms` timestamp captured at the midpoint of the API call
-3. **The browser** polls status.php 4 times per second (every 250ms) and estimates the server/client clock offset using request round-trip timing. If both devices have NTP (internet access), this offset converges to near-zero automatically
+NTP-style clock offset estimation uses ping/pong round-trips through the WebSocket, with a median filter + EWMA for stable offset calculation.
 
 ### The PLL Algorithm
 
 The sync engine runs through three phases:
 
-**1. Anchor** (first poll after a track starts)
+**1. Start** (first message after a track begins)
 - Preloads the audio file and waits for metadata
-- Seeks the audio element to FPP's current position
-- Starts playback at normal speed (1.0x)
-- Begins collecting timing samples
+- Seeks to FPP's current position
+- Starts playback, enters 1.5-second settle period
 
-**2. Calibrate** (~1.5 seconds, 6 polls)
-- Each poll records a pair: `{local_time, fpp_position}`
-- After 6 samples, computes a **least-squares linear regression** to find the *rate ratio* — how fast FPP's clock advances relative to the phone's clock
-- This ratio is typically very close to 1.0 (e.g., 1.0003) but the tiny difference matters over minutes of playback
-- Sets `playbackRate` to match the measured ratio
+**2. Calibrate** (~800ms minimum, 6+ samples)
+- Collects `{local_time, fpp_position}` pairs
+- Computes a **least-squares linear regression** to find the rate ratio between FPP's clock and the phone's clock
+- Clamps the base rate to +/-1% (rejects garbage calibration)
 
-**3. Locked** (ongoing, every 250ms)
-- Computes the **phase error**: `fpp_position - audio.currentTime`
-- Applies a **proportional correction**: `playbackRate = baseRate + 0.3 * phaseError`
-- This gently speeds up or slows down playback to close any remaining gap
-- The correction is clamped to +/-5% to stay imperceptible
-- Every 2 seconds, the **base rate is updated** via exponential moving average from observed drift, so the system *learns* the true clock relationship and corrections shrink over time
-- If error ever exceeds 2 seconds (e.g., user scrubbed on FPP), a hard seek is used as a fallback
+**3. Locked** (ongoing)
+- Computes phase error: `fpp_position - audio.currentTime`
+- Maintains a **2-second rolling average** (avg2s) as PLL input — prevents oscillation from instantaneous noise
+- **Adaptive gain**: `Kp = 0.01 * (1 + 4 * min(|avg2s|/200, 1))` — gentle when close (0.01), aggressive when far (0.05)
+- **Log-compressed correction**: `rate = baseRate + sign(avg2s) * Kp * log1p((|avg2s| - deadZone) / 100)`
+- **Dead zone**: no correction when error < 5ms
+- **Rate learning**: EMA (alpha=0.05) from 2-second observation windows, so corrections shrink as the true clock relationship is learned
+- **Hard seek fallback**: if error exceeds 2 seconds, seeks directly (with 2-second cooldown)
 
 ### Result
 
-After the initial 1.5-second calibration, the phone stays locked to FPP's position. The error display on the listen page shows the live phase error in milliseconds — it should hover near zero. The rate display shows the current `playbackRate`, which should be very close to 1.000x.
+After ~12-14 seconds (settle + calibration), the phone stays locked to FPP's position with 5-25ms steady-state error. The debug display shows live PLL state, error history, and playback rate.
 
 ---
 
 ## Technical Details (for developers)
 
-- Audio sync uses 250ms polling of FPP's `/api/fppd/status` endpoint
-- Position data comes from `milliseconds_elapsed` (not `seconds_played`, which is whole-seconds only)
-- Clock offset between phone and server is estimated using request round-trip midpoint timing, smoothed with a median filter + EMA
-- PLL calibration uses least-squares linear regression over 6 samples to compute the FPP/local clock rate ratio
-- Locked-phase correction: `playbackRate = baseRate + Kp * phaseError` (Kp=0.3, clamped to +/-5%)
-- Base rate learned via EMA (alpha=0.05) from 2-second observation windows
-- Hard seek fallback at >2 seconds of phase error, with 2-second cooldown
-- Playback starts via `POST /api/command` with the "Start Playlist" command (works for both playlists and `.fseq` sequences)
-- The WiFi AP runs hostapd on wlan1 with dnsmasq for DHCP and DNS (all queries resolve to the AP IP for captive portal behavior)
-- Config is stored at `/home/fpp/listen-sync/hostapd-listener.conf` and persists across reboots
-- The web UI uses sudo via `/etc/sudoers.d/listener-sync` to write the hostapd config and restart the AP service
+- **WebSocket transport**: Python asyncio server polls FPP every 100ms, broadcasts `{state, base, pos_ms, mp3_url, server_ms}` to all clients
+- **HTTP fallback**: 250ms polling of `status.php` when WebSocket is unavailable
+- **Clock offset**: NTP-style estimation via WebSocket ping/pong, median filter + EWMA (alpha=0.3)
+- **PLL calibration**: least-squares linear regression, 800ms minimum window, 6+ samples, base rate clamped to +/-1%
+- **Locked correction**: `rate = baseRate + sign(avg2s) * Kp * log1p((|avg2s| - 5) / 100)`, Kp adaptive 0.01-0.05
+- **Error averaging**: 2-second rolling window (avg2s) as PLL input, all-time average for diagnostics
+- **Hard seek**: >2 seconds error, 2-second cooldown between seeks
+- **Rate learning**: EMA alpha=0.05 from 2-second windows
+- **Position data**: `milliseconds_elapsed` from FPP API (not `seconds_played`, which is whole-seconds only)
+- **Server timestamp**: `server_ms` captured at midpoint of API call, used for clock offset calculation; `round()` not `intval()` to avoid 32-bit overflow on Pi 3B
+- **Apache proxy**: `mod_proxy_wstunnel` proxies `/ws` on port 80 to Python server on port 8080
+- **systemd service**: runs as `fpp` user with 64MB RAM / 25% CPU limits for Pi safety
+- **Playback control**: `POST /api/command` with "Start Playlist" / "Stop Now" commands
+- **Audio unlock**: browser autoplay policy requires a user gesture — first click/touch on the page silently plays and pauses to unlock the audio context

@@ -65,7 +65,7 @@ $seq = isset($src["current_sequence"]) ? strval($src["current_sequence"]) : "";
 $base = basename_noext($seq);
 
 // Use milliseconds_elapsed for frame-accurate position (seconds_played is whole-seconds only)
-$pos_ms = isset($src["milliseconds_elapsed"]) ? intval($src["milliseconds_elapsed"]) : 0;
+$pos_ms = isset($src["milliseconds_elapsed"]) ? round($src["milliseconds_elapsed"]) : 0;
 $sec_played = $pos_ms / 1000.0;
 
 

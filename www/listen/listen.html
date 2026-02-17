@@ -36,19 +36,6 @@
     button:disabled{ opacity:.5; cursor:default; }
     .row{ display:flex; gap:10px; margin-top:10px; }
     .row button{ width:50%; }
-    .pill{
-      display:inline-flex; gap:8px; align-items:center;
-      border:1px solid rgba(255,255,255,.08);
-      border-radius:999px; padding:8px 12px; color:var(--muted); font-size:13px;
-      background:rgba(0,0,0,.18);
-    }
-    .dot{ width:10px; height:10px; border-radius:50%; background:#666; }
-    .dot.ok{ background:var(--ok); }
-    .dot.bad{ background:var(--bad); }
-    .grid{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:12px; }
-    .kv{ background:rgba(0,0,0,.14); border:1px solid rgba(255,255,255,.06); border-radius:12px; padding:10px 12px; }
-    .k{ font-size:12px; color:var(--muted); }
-    .v{ margin-top:4px; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .small{ margin-top:12px; font-size:12px; color:var(--muted); line-height:1.4; }
     .footer{ margin-top:14px; text-align:center; font-size:12px; color:var(--muted); opacity:.85; }
     audio{ width:100%; margin-top:12px; }
@@ -65,14 +52,15 @@
     .status-msg{ margin-top:8px; font-size:12px; padding:8px; border-radius:8px; display:none; }
     .status-msg.success{ background:rgba(77,255,136,.15); color:var(--ok); }
     .status-msg.error{ background:rgba(255,77,77,.15); color:var(--bad); }
-    .opts-toggle{
-      text-align:center; cursor:pointer; padding:12px;
-      background:rgba(0,0,0,.14); border:1px solid rgba(255,255,255,.06);
-      border-radius:12px; color:var(--muted); font-size:13px;
-    }
-    .opts-toggle:hover{ background:rgba(0,0,0,.22); }
-    .opts-body{ display:none; margin-top:12px; }
-    .opts-body.open{ display:block; }
+    /* Sync UI */
+    .idle-msg{ text-align:center; margin-top:16px; padding:16px; border:1px solid rgba(255,255,255,.06); border-radius:12px; background:rgba(0,0,0,.14); color:var(--muted); font-size:15px; }
+    .now-playing{ text-align:center; margin-top:14px; padding:12px; border:1px solid var(--accent); border-radius:12px; background:rgba(0,229,255,.06); font-size:16px; color:var(--accent); }
+    .err{ color:var(--bad); font-weight:600; font-size:13px; margin-top:6px; }
+    .debug-toggle{ margin-top:14px; font-size:13px; color:var(--muted); opacity:.6; }
+    .debug-toggle label{ cursor:pointer; }
+    .box{ margin-top:8px; padding:12px; border:1px solid rgba(255,255,255,.06); border-radius:12px; background:rgba(0,0,0,.14); font-size:13px; color:var(--muted); }
+    .box b{ color:var(--ink); opacity:.8; }
+    .hidden{ display:none; }
   </style>
 </head>
 <body>
@@ -80,10 +68,11 @@
   <div class="header">
     <img src="logo.png" alt="Undocumented Engineer" />
     <h1>Show Audio</h1>
-    <p class="sub">Show owner controls. Tap anywhere to enable audio.</p>
+    <p class="sub" id="ver">v...</p>
+    <p class="sub">Keep this page open during the show.</p>
   </div>
 
-  <!-- Playback Control — always visible -->
+  <!-- Playback Control -- always visible -->
   <div class="card">
     <h3 class="section-title">Playback</h3>
     <select id="seqSelect"><option value="">Loading...</option></select>
@@ -96,486 +85,827 @@
 
   <!-- Sync Status -->
   <div class="card">
-    <div class="row" style="margin-top:0;">
-      <button id="mute">Mute</button>
-      <button id="resync">Resync</button>
+    <button id="enableBtn">Enable Audio</button>
+    <div id="idleMsg" class="idle-msg">No show is currently broadcasting.</div>
+    <div id="nowPlaying" class="now-playing hidden">&#9835; Now Playing<div id="trackName" style="margin-top:4px;">-</div><div id="mediaFile" style="font-size:13px;color:var(--muted);margin-top:2px;"></div></div>
+
+    <div class="err" id="fetchErr"></div>
+    <div class="err" id="playErr"></div>
+
+    <div class="debug-toggle">
+      <label><input type="checkbox" id="debugCheck" /> Debug</label> &nbsp;
+      <label><input type="checkbox" id="logCheck" /> Client Log</label> &nbsp;
+      <label><input type="checkbox" id="serverLogCheck" /> Server Log</label>
     </div>
 
-    <span class="pill" style="margin-top:12px; display:inline-flex;"><span id="dot" class="dot"></span><span id="state">Idle</span></span>
-
-    <audio id="player" preload="auto" playsinline></audio>
-
-    <div class="grid">
-      <div class="kv"><div class="k">Track</div><div class="v" id="track">&mdash;</div></div>
-      <div class="kv"><div class="k">Error</div><div class="v" id="err">&mdash;</div></div>
-      <div class="kv"><div class="k">Rate</div><div class="v" id="rate">&mdash;</div></div>
-      <div class="kv"><div class="k">Poll</div><div class="v" id="poll">&mdash;</div></div>
+    <div id="debugBox" class="box hidden">
+      <div><b>Transport:</b> <span id="transport">-</span></div>
+      <div><b>RTT:</b> <span id="rtt">-</span> ms</div>
+      <div><b>Clock Offset:</b> <span id="offset">-</span> ms</div>
+      <div><b>Sequence:</b> <span id="seq">-</span></div>
+      <div><b>State:</b> <span id="state">-</span></div>
+      <div><b>Target:</b> <span id="target">-</span> ms</div>
+      <div><b>Local:</b> <span id="local">-</span> ms</div>
+      <div><b>Error:</b> <span id="err">-</span> ms</div>
+      <div><b>PLL State:</b> <span id="pllState">idle</span></div>
+      <div><b>Rate:</b> <span id="pllRate">1.000</span>x</div>
+      <div><b>Avg Error (2s):</b> <span id="avgErr2s">-</span> ms</div>
+      <div><b>Avg Error (all):</b> <span id="avgErrAll">-</span> ms</div>
+      <div><b>Effective Rate:</b> <span id="effRate">-</span></div>
+      <div><b>Buffered:</b> <span id="buffered">-</span> s</div>
+      <div><b>Last Correction:</b> <span id="lastCorrection">-</span></div>
+      <div><b>Play Latency:</b> <span id="playLatency">0</span> ms</div>
     </div>
 
-    <div class="small">
-      If audio is silent on iPhone, check the ringer switch and volume.
-      You may need to stay on this page (some phones pause background audio).
+    <div id="logControls" class="hidden" style="margin-top:8px;text-align:right;">
+      <span id="logStatus" style="font-size:11px;color:#f90;margin-right:8px;"></span>
+      <button id="resumeLogBtn" style="font-size:12px;padding:4px 10px;width:auto;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:var(--muted);display:none;">Resume Log</button>
+      <button id="copyLogBtn" style="font-size:12px;padding:4px 10px;width:auto;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:var(--muted);">Copy Log</button>
+      <button id="clearLogBtn" style="font-size:12px;padding:4px 10px;width:auto;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:var(--muted);">Clear Log</button>
     </div>
+    <div id="logBox" class="box hidden" style="max-height:200px;overflow-y:auto;font-family:monospace;font-size:11px;white-space:pre-wrap;"></div>
 
-    <div class="footer" id="ver">Version: (loading&hellip;)</div>
+    <audio id="audio" preload="auto" playsinline></audio>
+
+    <div class="footer" id="verFooter"></div>
   </div>
 
-  <!-- Options — collapsible, WiFi password only if wlan1 present -->
-  <div class="card" id="optionsCard" style="display:none;">
-    <div class="opts-toggle" id="optsToggle">&#9660; Options</div>
-    <div class="opts-body" id="optsBody">
-      <div id="wifiSection">
-        <h3 class="section-title" style="margin-top:12px;">WiFi AP Settings</h3>
-
-        <p class="small" style="margin-top:0;">Network name (SSID)</p>
-        <input type="text" id="newSSID" placeholder="SHOW_AUDIO" autocomplete="off">
-        <button class="btn-sm" id="changeSSID">Change SSID</button>
-        <div id="ssidStatus" class="status-msg"></div>
-
-        <p class="small" style="margin-top:14px;">Password (8-63 characters)</p>
-        <input type="password" id="newPass" placeholder="New password" autocomplete="new-password">
-        <button class="btn-sm" id="changePass">Change Password</button>
-        <div id="passStatus" class="status-msg"></div>
-      </div>
-    </div>
-  </div>
 </div>
 
 <script>
 (() => {
-  // ====== Config ======
-  const STATUS_URL   = "./status.php";
-  const POLL_MS      = 250;
-  const CAL_COUNT    = 6;       // Samples to calibrate (~1.5s)
-  const Kp           = 0.3;     // Proportional gain (rate adj per second of error)
-  const MAX_ADJ      = 0.05;    // Max +/-5% rate deviation
-  const HARD_SEEK_S  = 2.0;     // Hard seek threshold (seconds)
-  const RATE_EMA     = 0.05;    // EMA alpha for learning base rate
-  const SEEK_COOLDOWN_MS = 2000;
+// =============================================================================
+// FPP EAVESDROP — Adaptive PLL Audio Synchronization
+// =============================================================================
+// Ported from fpp-listener-sync v2.4.0
+//
+// Syncs HTML5 audio playback on audience phones to a Falcon Player (FPP)
+// master clock. Uses WebSocket (primary) or HTTP polling (fallback) for
+// transport, NTP-style clock offset estimation, and a 3-phase PLL
+// (idle -> calibrating -> locked) with adaptive gain and log-compressed
+// corrections. Converges in ~12-14 seconds with 5-25ms steady-state error.
+// =============================================================================
 
-  // ====== UI refs ======
-  const dot = document.getElementById("dot");
-  const stateEl = document.getElementById("state");
-  const trackEl = document.getElementById("track");
-  const errEl = document.getElementById("err");
-  const rateEl = document.getElementById("rate");
-  const pollEl = document.getElementById("poll");
-  const verEl = document.getElementById("ver");
-  const muteBtn = document.getElementById("mute");
-  const resyncBtn = document.getElementById("resync");
-  const audio = document.getElementById("player");
+// --- DOM References ---
+const enableBtn=document.getElementById('enableBtn'),
+audio=document.getElementById('audio'),
+mediaFileEl=document.getElementById('mediaFile'),
+idleMsg=document.getElementById('idleMsg'),
+nowPlaying=document.getElementById('nowPlaying'),
+trackName=document.getElementById('trackName'),
+pollEl=document.getElementById('transport'),
+fetchErrEl=document.getElementById('fetchErr'),
+playErrEl=document.getElementById('playErr'),
+seqEl=document.getElementById('seq'),
+stateEl=document.getElementById('state'),
+targetEl=document.getElementById('target'),
+localEl=document.getElementById('local'),
+errEl=document.getElementById('err'),
+pllStateEl=document.getElementById('pllState'),
+pllRateEl=document.getElementById('pllRate'),
+avgErr2sEl=document.getElementById('avgErr2s'),
+avgErrAllEl=document.getElementById('avgErrAll'),
+effRateEl=document.getElementById('effRate'),
+bufferedEl=document.getElementById('buffered'),
+lastCorrectionEl=document.getElementById('lastCorrection'),
+playLatencyEl=document.getElementById('playLatency'),
+rttEl=document.getElementById('rtt'),
+offsetEl=document.getElementById('offset'),
+debugCheck=document.getElementById('debugCheck'),
+debugBox=document.getElementById('debugBox');
 
-  // ====== State ======
-  let audioUnlocked = false;
-  let muted = false;
-  let currentBase = "";
-  let pollTimer = null;
-  let haveMetadata = false;
-  let lastSeekMs = 0;
+// --- Global State ---
+let currentBase="", pollTimer=null, haveMetadata=false, needInitialSeek=false, lastSeekMs=0, settleUntil=0, syncBusy=false;
+let logFrozen=false, wasPlaying=false;
+let pendingMsg=null, playAttempting=false;
 
-  // Clock offset estimation
-  let clockOffset = 0;
-  let clockOffsetValid = false;
-  const OFFSET_HISTORY_SIZE = 8;
-  let offsetHistory = [];
+// --- WebSocket Transport ---
+const WS_RECONNECT_MS=2000;
+const WS_PING_INTERVAL_MS=1000;
+const HTTP_POLL_MS=250;
+let ws=null, wsConnected=false, wsPingTimer=null, wsReconnectTimer=null;
 
-  // ====== PLL State ======
-  const pll = {
-    phase: 'idle',       // 'idle' | 'calibrating' | 'locked'
-    samples: [],         // [{localMs, fppMs}] for calibration
-    baseRate: 1.0,       // Learned FPP/local clock ratio
-    anchorLocalMs: 0,    // performance.now() at anchor
-    anchorFppMs: 0,      // FPP position (ms) at anchor
+// --- Clock Offset Estimation (NTP-style) ---
+let clockOffset=0, clockOffsetValid=false;
+const RTT_HISTORY_SIZE=5;
+const OFFSET_HISTORY_SIZE=8;
+const MIN_OFFSET_SAMPLES=3;
+let rttHistory=[];
+let offsetHistory=[];
+
+// --- Sync State ---
+const LEAD_MS=2000;
+const SEEK_COOLDOWN_MS=2000;
+let awaitingStart=false;
+let scheduledStartTarget=0;
+let lastCorrectionMs=0;
+let logThrottle=0;
+let errHistoryAll=[];
+let errHistory2s=[];
+
+// --- PLL Constants ---
+const CAL_MIN_MS=800;
+const Kp_BASE=0.01;
+const Kp_SCALE=4;
+const MAX_ADJ=0.05;
+const DEAD_ZONE_MS=5;
+const LOG_SCALE_MS=100;
+const HARD_SEEK_S=2.0;
+const RATE_EMA=0.05;
+const MIN_RATE_CHANGE=0.003;
+
+// --- PLL State Machine ---
+const pll={phase:'idle',samples:[],baseRate:1.0,anchorLocalMs:0,anchorFppMs:0,lastRateUpdateMs:0};
+
+// --- Effective Rate Measurement (diagnostic) ---
+let effRateWallMs=0, effRateLocalMs=0, lastEffRate=0;
+
+// --- Play-Ahead Latency Compensation ---
+const PLAY_LATENCY_KEY='fpp-play-latency';
+let playLatencyMs=0;
+let playCallWallMs=0;
+let playCallAudioPos=0;
+try{
+  const saved=localStorage.getItem(PLAY_LATENCY_KEY);
+  if(saved){const v=Number(saved);if(v>=0&&v<1000)playLatencyMs=v;}
+}catch(e){}
+
+// --- Utilities ---
+function clamp(v,lo,hi){return Math.max(lo,Math.min(hi,v));}
+
+function pllReset(){
+  pll.phase='idle';pll.samples=[];pll.baseRate=1.0;pll.anchorLocalMs=0;pll.anchorFppMs=0;pll.lastRateUpdateMs=0;
+  if(audio)audio.playbackRate=1.0;
+}
+
+function linearSlope(samples){
+  if(samples.length<2)return 1.0;
+  const n=samples.length,first=samples[0];
+  let sumX=0,sumY=0,sumXX=0,sumXY=0;
+  for(let i=0;i<n;i++){
+    const x=samples[i].localMs-first.localMs;
+    const y=samples[i].fppMs-first.fppMs;
+    sumX+=x;sumY+=y;sumXX+=x*x;sumXY+=x*y;
+  }
+  const denom=n*sumXX-sumX*sumX;
+  if(Math.abs(denom)<1e-9)return 1.0;
+  return(n*sumXY-sumX*sumY)/denom;
+}
+
+// --- Client-Side Log ---
+const logBox=document.getElementById('logBox');
+const LOG_MAX=200;
+let logCount=0;
+const logCheck=document.getElementById('logCheck');
+function log(msg){
+  if(!logCheck.checked||logFrozen)return;
+  const t=new Date();
+  const ts=t.toTimeString().slice(0,8)+'.'+String(t.getMilliseconds()).padStart(3,'0');
+  const line=ts+' '+msg+'\n';
+  logBox.textContent+=line;
+  logCount++;
+  if(logCount>LOG_MAX){
+    const lines=logBox.textContent.split('\n');
+    logBox.textContent=lines.slice(-LOG_MAX).join('\n');
+    logCount=LOG_MAX;
+  }
+  logBox.scrollTop=logBox.scrollHeight;
+}
+
+// --- Server-Side Reporting ---
+const REPORT_INTERVAL_MS=1000;
+let lastReportMs=0;
+let lastRawPosMs=0, lastTargetMs=0, lastLocalMs=0;
+let lastAvg2s=0;
+const serverLogCheck=document.getElementById('serverLogCheck');
+function sendReport(event,errMs,rate){
+  if(!serverLogCheck.checked)return;
+  if(!ws||ws.readyState!==WebSocket.OPEN)return;
+  const now=Date.now();
+  const immediate=event==='START'||event==='CORRECTION'||event==='TRACK'||event==='INITIAL_SEEK'||event==='STOP';
+  if(!immediate&&(now-lastReportMs)<REPORT_INTERVAL_MS)return;
+  lastReportMs=now;
+  ws.send(JSON.stringify({
+    type:'report',
+    event:event,
+    fpp:Math.round(lastRawPosMs),
+    target:Math.round(lastTargetMs),
+    local:Math.round(lastLocalMs),
+    err:Math.round(errMs||0),
+    rate:Number((rate||1.0).toFixed(4)),
+    eff:Number((lastEffRate||0).toFixed(3)),
+    offset:Math.round(clockOffset),
+    avg2s:Math.round(lastAvg2s),
+    track:currentBase||''
+  }));
+}
+
+// --- Debug UI Controls ---
+const logControls=document.getElementById('logControls');
+debugCheck.addEventListener('change',()=>{
+  debugBox.classList.toggle('hidden',!debugCheck.checked);
+});
+logCheck.addEventListener('change',()=>{
+  const show=logCheck.checked;
+  logBox.classList.toggle('hidden',!show);
+  logControls.classList.toggle('hidden',!show);
+});
+document.getElementById('copyLogBtn').onclick=()=>{
+  if(navigator.clipboard){navigator.clipboard.writeText(logBox.textContent).then(()=>{document.getElementById('copyLogBtn').textContent='Copied!';setTimeout(()=>{document.getElementById('copyLogBtn').textContent='Copy Log';},1500);});}
+};
+document.getElementById('clearLogBtn').onclick=()=>{logBox.textContent='';logCount=0;logFrozen=false;document.getElementById('logStatus').textContent='';document.getElementById('resumeLogBtn').style.display='none';};
+document.getElementById('resumeLogBtn').onclick=()=>{logFrozen=false;document.getElementById('logStatus').textContent='';document.getElementById('resumeLogBtn').style.display='none';log('--- LOG RESUMED ---');};
+audio.addEventListener('loadedmetadata',()=>{haveMetadata=true;log('METADATA loaded');});
+audio.addEventListener('error',()=>{playErrEl.textContent="No matching audio file detected";log('AUDIO ERROR');});
+
+// =============================================================================
+// CLOCK OFFSET ESTIMATION
+// =============================================================================
+function updateClockOffset(serverTs, clientSendTs, rtt){
+  const sample=serverTs-clientSendTs-(rtt/2);
+  offsetHistory.push(sample);
+  if(offsetHistory.length>OFFSET_HISTORY_SIZE)offsetHistory.shift();
+  const sorted=[...offsetHistory].sort((a,b)=>a-b);
+  const median=sorted[Math.floor(sorted.length/2)];
+  if(!clockOffsetValid){
+    clockOffset=median;
+    clockOffsetValid=true;
+  }else{
+    clockOffset=clockOffset*0.7+median*0.3;
+  }
+  offsetEl.textContent=Math.round(clockOffset);
+}
+
+// =============================================================================
+// WEBSOCKET CONNECTION (primary transport)
+// =============================================================================
+function connectWebSocket(){
+  if(ws&&(ws.readyState===WebSocket.CONNECTING||ws.readyState===WebSocket.OPEN))return;
+  const wsUrl='ws://'+location.hostname+'/ws';
+  try{ws=new WebSocket(wsUrl);}catch(e){startHttpFallback();return;}
+
+  ws.onopen=()=>{
+    wsConnected=true;
+    stopHttpPolling();
+    offsetHistory=[];
+    clockOffsetValid=false;
+    clockOffset=0;
+    pollEl.textContent='WebSocket connected';
+    fetchErrEl.textContent='';
+    // Burst 5 rapid pings for fast clock calibration
+    sendPing();
+    setTimeout(sendPing,200);
+    setTimeout(sendPing,400);
+    setTimeout(sendPing,600);
+    setTimeout(sendPing,800);
+    if(wsPingTimer)clearInterval(wsPingTimer);
+    wsPingTimer=setInterval(sendPing,WS_PING_INTERVAL_MS);
+    log('WS CONNECTED, burst clock cal');
   };
 
-  function pllReset(){
-    pll.phase = 'idle';
-    pll.samples = [];
-    pll.baseRate = 1.0;
-    pll.anchorLocalMs = 0;
-    pll.anchorFppMs = 0;
-  }
-
-  // Least-squares slope: ms of FPP time per ms of local time
-  function linearSlope(samples){
-    if(samples.length < 2) return 1.0;
-    const n = samples.length;
-    const first = samples[0];
-    let sumX = 0, sumY = 0, sumXX = 0, sumXY = 0;
-    for(let i = 0; i < n; i++){
-      const x = samples[i].localMs - first.localMs;
-      const y = samples[i].fppMs - first.fppMs;
-      sumX += x; sumY += y; sumXX += x * x; sumXY += x * y;
-    }
-    const denom = n * sumXX - sumX * sumX;
-    if(Math.abs(denom) < 1e-9) return 1.0;
-    return (n * sumXY - sumX * sumY) / denom;
-  }
-
-  function setDot(mode){
-    dot.classList.remove("ok","bad");
-    if(mode==="ok") dot.classList.add("ok");
-    if(mode==="bad") dot.classList.add("bad");
-  }
-
-  function setState(text, ok){
-    stateEl.textContent = text;
-    setDot(ok ? "ok" : (ok===false ? "bad" : ""));
-  }
-
-  function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
-
-  // ====== Audio unlock on first user interaction ======
-  function unlockAudio(){
-    if(audioUnlocked) return;
-    audioUnlocked = true;
-    try {
-      audio.muted = true;
-      const p = audio.play();
-      if(p && typeof p.then === 'function'){
-        p.then(() => { audio.pause(); audio.currentTime = 0; audio.muted = false; })
-         .catch(() => { audio.muted = false; });
-      } else {
-        audio.muted = false;
+  ws.onmessage=(event)=>{
+    try{
+      const data=JSON.parse(event.data);
+      if(data.type==='pong'){
+        handlePong(data);
+      }else if(data.state!==undefined){
+        sync(data);
       }
-    } catch(_){ audio.muted = false; }
+    }catch(e){}
+  };
+
+  ws.onclose=()=>{
+    log('WS DISCONNECTED, falling back to HTTP');
+    wsConnected=false;
+    if(wsPingTimer){clearInterval(wsPingTimer);wsPingTimer=null;}
+    pollEl.textContent='WS disconnected, HTTP fallback';
+    startHttpFallback();
+    if(wsReconnectTimer)clearTimeout(wsReconnectTimer);
+    wsReconnectTimer=setTimeout(connectWebSocket,WS_RECONNECT_MS);
+  };
+
+  ws.onerror=()=>{};
+}
+
+function sendPing(){
+  if(ws&&ws.readyState===WebSocket.OPEN){
+    ws.send(JSON.stringify({type:'ping',client_ts:Date.now()}));
   }
-  document.addEventListener("click", unlockAudio, { once: true });
-  document.addEventListener("touchstart", unlockAudio, { once: true });
+}
 
-  // ====== Clock offset ======
-  function updateClockOffset(serverMs, clientSendMs, rtt){
-    const sample = serverMs - clientSendMs - (rtt / 2);
-    offsetHistory.push(sample);
-    if(offsetHistory.length > OFFSET_HISTORY_SIZE) offsetHistory.shift();
-    const sorted = [...offsetHistory].sort((a,b) => a - b);
-    const median = sorted[Math.floor(sorted.length / 2)];
-    if(!clockOffsetValid){
-      clockOffset = median;
-      clockOffsetValid = true;
-    } else {
-      clockOffset = clockOffset * 0.7 + median * 0.3;
-    }
+function handlePong(data){
+  const now=Date.now();
+  const clientTs=data.client_ts;
+  const serverTs=data.server_ts;
+  const rtt=now-clientTs;
+  if(rtt>0&&rtt<500){
+    rttHistory.push(rtt);
+    if(rttHistory.length>RTT_HISTORY_SIZE)rttHistory.shift();
+    rttEl.textContent=rtt;
+    updateClockOffset(serverTs,clientTs,rtt);
+    log('PONG rtt='+rtt+'ms offset='+Math.round(clockOffset)+'ms');
+  }else{
+    log('PONG REJECTED rtt='+rtt+'ms (out of range)');
   }
+}
 
-  // ====== Compute FPP target position in seconds ======
-  function getTargetSec(msg){
-    const nowMs = Date.now();
-    const serverMs = Number(msg.server_ms);
-    const rawPosMs = Number(msg.pos_ms || 0);
-    let targetMs = rawPosMs;
-    if(Number.isFinite(serverMs) && serverMs > 1e12 && Math.abs(nowMs - serverMs) < 300000){
-      let elapsed = clockOffsetValid ? ((nowMs + clockOffset) - serverMs) : (nowMs - serverMs);
-      if(!Number.isFinite(elapsed)) elapsed = 0;
-      elapsed = clamp(elapsed, 0, 1500);
-      targetMs = rawPosMs + elapsed;
+// =============================================================================
+// HTTP FALLBACK POLLING
+// =============================================================================
+function startHttpFallback(){
+  if(pollTimer)return;
+  pollTimer=setInterval(pollOnce,HTTP_POLL_MS);
+  pollOnce();
+}
+
+function stopHttpPolling(){
+  if(pollTimer){clearInterval(pollTimer);pollTimer=null;}
+}
+
+async function pollOnce(){
+  const t0=Date.now();
+  try{
+    const url=location.origin+'/listen/status.php?ts='+Date.now();
+    const r=await fetch(url,{cache:'no-store'});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    const msg=await r.json();
+    const t1=Date.now();
+    const rtt=t1-t0;
+    if(!wsConnected)pollEl.textContent='HTTP ok ('+rtt+' ms)';
+    fetchErrEl.textContent='';
+    if(msg.server_ms&&rtt>0&&rtt<500){
+      updateClockOffset(msg.server_ms,t0,rtt);
+      if(!wsConnected)rttEl.textContent=rtt;
     }
-    return targetMs / 1000.0;
+    sync(msg);
+  }catch(e){
+    if(!wsConnected)pollEl.textContent='HTTP FAILED';
+    fetchErrEl.textContent='Fetch error: '+(e?.message||e);
   }
+}
 
-  // ====== Sync (PLL clock-lock) ======
-  function sync(msg){
-    trackEl.textContent = msg.base || "\u2014";
+// =============================================================================
+// AUDIO PLAYBACK HELPERS
+// =============================================================================
+let audioUnlocked=false;
 
-    // --- Stop state: pause and reset ---
-    if(msg.state === "stop" || !msg.base){
-      if(!audio.paused) audio.pause();
-      audio.currentTime = 0;
-      audio.playbackRate = 1.0;
-      currentBase = "";
-      haveMetadata = false;
-      pllReset();
-      setState("Idle", null);
-      errEl.textContent = "\u2014";
-      rateEl.textContent = "\u2014";
-      return;
-    }
-
-    // --- Pause state ---
-    if(msg.state === "pause"){
-      if(!audio.paused) audio.pause();
-      setState("Paused", true);
-      return;
-    }
-
-    // --- Playing ---
-
-    // Track change — load new source
-    if(msg.base && msg.base !== currentBase){
-      currentBase = msg.base;
-      haveMetadata = false;
-      pllReset();
-      audio.src = msg.mp3_url || "";
-      audio.load();
-      audio.addEventListener("loadedmetadata", function onMeta(){
-        audio.removeEventListener("loadedmetadata", onMeta);
-        haveMetadata = true;
-      });
-      return;
-    }
-
-    // Wait for metadata
-    if(!haveMetadata || !Number.isFinite(audio.duration) || audio.duration <= 0) return;
-
-    const fppSec = getTargetSec(msg);
-    const fppMs  = fppSec * 1000;
-    const localMs = performance.now();
-    const nowMs   = Date.now();
-
-    // --- PLL Phase: Idle -> start calibrating ---
-    if(pll.phase === 'idle'){
-      pll.phase = 'calibrating';
-      pll.samples = [{localMs, fppMs}];
-      audio.currentTime = clamp(fppSec, 0, Math.max(0, audio.duration - 0.1));
-      audio.playbackRate = 1.0;
-      lastSeekMs = nowMs;
-      if(audioUnlocked) audio.play().catch(() => {});
-      setState("Calibrating\u2026", true);
-      errEl.textContent = "cal";
-      rateEl.textContent = "1.000x";
-      return;
-    }
-
-    // --- PLL Phase: Calibrating ---
-    if(pll.phase === 'calibrating'){
-      pll.samples.push({localMs, fppMs});
-      setState("Calibrating\u2026", true);
-
-      const phaseErr = fppSec - (audio.currentTime || 0);
-      errEl.textContent = (phaseErr >= 0 ? "+" : "") + (phaseErr * 1000).toFixed(0) + " ms";
-      rateEl.textContent = "1.000x";
-
-      if(pll.samples.length >= CAL_COUNT){
-        pll.baseRate = linearSlope(pll.samples);
-        if(pll.baseRate < 0.95 || pll.baseRate > 1.05) pll.baseRate = 1.0;
-        pll.anchorLocalMs = localMs;
-        pll.anchorFppMs = fppMs;
-        pll.phase = 'locked';
-        audio.playbackRate = pll.baseRate;
-      }
-      if(audio.paused && audioUnlocked) audio.play().catch(() => {});
-      return;
-    }
-
-    // --- PLL Phase: Locked ---
-    const ourSec   = audio.currentTime || 0;
-    const phaseErr = fppSec - ourSec;
-
-    errEl.textContent = (phaseErr >= 0 ? "+" : "") + (phaseErr * 1000).toFixed(0) + " ms";
-    setState("Locked", true);
-
-    // Hard seek if way off
-    if(Math.abs(phaseErr) > HARD_SEEK_S && (nowMs - lastSeekMs) > SEEK_COOLDOWN_MS){
-      audio.currentTime = clamp(fppSec, 0, Math.max(0, audio.duration - 0.1));
-      lastSeekMs = nowMs;
-      pll.anchorLocalMs = localMs;
-      pll.anchorFppMs = fppMs;
-      if(audio.paused && audioUnlocked) audio.play().catch(() => {});
-      rateEl.textContent = pll.baseRate.toFixed(3) + "x";
-      return;
-    }
-
-    // Proportional rate correction
-    let rate = pll.baseRate + Kp * phaseErr;
-    rate = clamp(rate, 1 - MAX_ADJ, 1 + MAX_ADJ);
-    audio.playbackRate = rate;
-    rateEl.textContent = rate.toFixed(3) + "x";
-
-    // Learn: update baseRate from longer observation window
-    const dtLocal = localMs - pll.anchorLocalMs;
-    if(dtLocal > 2000){
-      const dtFpp = fppMs - pll.anchorFppMs;
-      const instRate = dtFpp / dtLocal;
-      if(instRate > 0.95 && instRate < 1.05){
-        pll.baseRate = pll.baseRate * (1 - RATE_EMA) + instRate * RATE_EMA;
-      }
-      pll.anchorLocalMs = localMs;
-      pll.anchorFppMs = fppMs;
-    }
-
-    // Ensure playing; re-anchor on resume from pause
-    if(audio.paused && audioUnlocked){
-      audio.play().catch(() => {});
-      pll.anchorLocalMs = localMs;
-      pll.anchorFppMs = fppMs;
+async function safePlay(){
+  try{
+    const p=audio.play();
+    if(p&&typeof p.catch==='function'){await p;}
+    playErrEl.textContent='';
+  }catch(e){
+    if(e&&e.name==='NotAllowedError'){
+      // Show the Enable button again so the user knows they need to tap
+      if(!audioUnlocked){enableBtn.classList.remove('hidden');}
+    }else{
+      playErrEl.textContent='Audio error: '+(e?.message||e);
     }
   }
+}
 
-  // ====== Polling ======
-  async function tick(){
-    const t0 = Date.now();
-    try {
-      const r = await fetch(STATUS_URL + "?ts=" + t0, { cache: "no-store" });
-      if(!r.ok) throw new Error("HTTP " + r.status);
-      const msg = await r.json();
-      const t1 = Date.now();
-      const rtt = t1 - t0;
-      pollEl.textContent = rtt + " ms";
+// =============================================================================
+// AUDIO UNLOCK
+// =============================================================================
+// Enable Audio button satisfies browser autoplay policy.
+// Polling and state detection run regardless — this only gates audio playback.
+function unlockAudio(){
+  if(audioUnlocked)return;
+  audioUnlocked=true;
+  enableBtn.classList.add('hidden');
+  playErrEl.textContent='';
+  // If audio already has a source and is paused (sync tried but was blocked), play it now
+  if(audio.src&&audio.paused&&currentBase){
+    playAttempting=true;
+    safePlay().finally(()=>{playAttempting=false;});
+    return;
+  }
+  // Otherwise warm up the audio context with a silent play/pause
+  try{
+    audio.muted=true;
+    const p=audio.play();
+    if(p&&typeof p.then==='function'){
+      p.then(()=>{audio.pause();audio.currentTime=0;audio.muted=false;})
+      .catch(()=>{audio.muted=false;});
+    }else{audio.muted=false;}
+  }catch(e){audio.muted=false;}
+}
+enableBtn.onclick=unlockAudio;
 
-      if(msg.server_ms && rtt > 0 && rtt < 500){
-        updateClockOffset(msg.server_ms, t0, rtt);
-      }
+// Start transports immediately on page load
+pollEl.textContent='Connecting...';
+connectWebSocket();
+startHttpFallback();
 
-      sync(msg);
-    } catch(e){
-      setState("Disconnected", false);
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible'&&!wsConnected){
+    connectWebSocket();
+  }
+});
+
+// =============================================================================
+// SYNC ALGORITHM
+// =============================================================================
+async function sync(msg){
+  pendingMsg=msg;
+  if(syncBusy)return;
+  syncBusy=true;
+  try{
+    while(pendingMsg){
+      const m=pendingMsg;
+      pendingMsg=null;
+      await syncInner(m);
+    }
+  }finally{syncBusy=false;}
+}
+
+async function syncInner(msg){
+  // Update debug display
+  seqEl.textContent=msg.base||'-';
+  stateEl.textContent=msg.state||'-';
+  targetEl.textContent=msg.pos_ms??'-';
+
+  // Show/hide idle vs playing indicators
+  if(msg.state==='stop'||!msg.base){
+    idleMsg.classList.remove('hidden');
+    nowPlaying.classList.add('hidden');
+    playErrEl.textContent='';
+  }else{
+    idleMsg.classList.add('hidden');
+    nowPlaying.classList.remove('hidden');
+    trackName.textContent=msg.base+'.fseq';
+    if(msg.mp3_url){
+      mediaFileEl.textContent=msg.mp3_url.split('/').pop();
+    }else{
+      mediaFileEl.textContent='No audio file found';
     }
   }
 
-  function startPolling(){
-    if(pollTimer) return;
-    pollTimer = setInterval(tick, POLL_MS);
-    tick();
-  }
-
-  // ====== UI events ======
-  muteBtn.addEventListener("click", () => {
-    muted = !muted;
-    muteBtn.textContent = muted ? "Unmute" : "Mute";
-    audio.muted = muted;
-  });
-
-  resyncBtn.addEventListener("click", () => {
-    if(!currentBase) return;
+  // --- Track Change ---
+  if(msg.base&&msg.base!==currentBase){
+    logBox.textContent='';logCount=0;logFrozen=false;
+    document.getElementById('logStatus').textContent='';
+    document.getElementById('resumeLogBtn').style.display='none';
+    log('TRACK CHANGE: '+msg.base+' src='+msg.mp3_url);
+    sendReport('TRACK',0,1.0);
+    currentBase=msg.base;
+    haveMetadata=false;
+    needInitialSeek=true;
+    awaitingStart=false;
+    audio.playbackRate=1.0;
+    audio.src=msg.mp3_url||'';
+    audio.load();
     pllReset();
-    lastSeekMs = 0;
-  });
-
-  // Fetch version
-  fetch("./version.php?t=" + Date.now()).then(r => r.json()).then(v => {
-    verEl.textContent = "Eavesdrop v" + (v.eavesdrop || "?") + " | FPP v" + (v.fpp || "?");
-  }).catch(() => { verEl.textContent = "Version: unknown"; });
-
-  // Start polling immediately
-  startPolling();
-
-  // ====== Admin: Playback Controls ======
-  function showStatus(el, msg, ok){
-    el.textContent = msg;
-    el.className = "status-msg " + (ok ? "success" : "error");
-    el.style.display = "block";
-    setTimeout(() => { el.style.display = "none"; }, 5000);
+    errHistoryAll=[];errHistory2s=[];
+    effRateWallMs=0;
   }
 
-  async function adminPost(data){
-    const fd = new FormData();
-    for(const k in data) fd.append(k, data[k]);
-    const r = await fetch("./admin.php", { method: "POST", body: fd });
-    return await r.json();
-  }
-
-  const seqSelect = document.getElementById("seqSelect");
-  const startSeqBtn = document.getElementById("startSeq");
-  const stopSeqBtn = document.getElementById("stopSeq");
-  const seqStatus = document.getElementById("seqStatus");
-
-  // Load playlists + sequences on page load
-  (async function loadSequences(){
-    try {
-      const res = await adminPost({ action: "get_sequences" });
-      if(!res.success) return;
-      seqSelect.innerHTML = '<option value="">-- Select --</option>';
-      if(Array.isArray(res.playlists) && res.playlists.length > 0){
-        const grp = document.createElement("optgroup");
-        grp.label = "Playlists";
-        res.playlists.forEach(s => {
-          const o = document.createElement("option");
-          o.value = s; o.textContent = s;
-          grp.appendChild(o);
-        });
-        seqSelect.appendChild(grp);
+  // --- Stop State ---
+  if(msg.state==='stop'){
+    if(wasPlaying){
+      log('STATE: stop');
+      sendReport('STOP',0,1.0);
+      if(logCheck.checked){
+        logFrozen=true;
+        document.getElementById('logStatus').textContent='Log frozen (song ended)';
+        document.getElementById('resumeLogBtn').style.display='';
       }
-      if(Array.isArray(res.sequences) && res.sequences.length > 0){
-        const grp = document.createElement("optgroup");
-        grp.label = "Sequences";
-        res.sequences.forEach(s => {
-          const o = document.createElement("option");
-          o.value = s; o.textContent = s;
-          grp.appendChild(o);
-        });
-        seqSelect.appendChild(grp);
-      }
-      // Show Options card only if wlan1 exists
-      if(res.has_wlan1){
-        document.getElementById("optionsCard").style.display = "";
-        if(res.current_ssid) document.getElementById("newSSID").placeholder = res.current_ssid;
-      }
-    } catch(e){ seqSelect.innerHTML = '<option value="">Failed to load</option>'; }
-  })();
-
-  startSeqBtn.addEventListener("click", async () => {
-    const seq = seqSelect.value;
-    if(!seq){ showStatus(seqStatus, "Select a playlist or sequence first", false); return; }
-    startSeqBtn.disabled = true; startSeqBtn.textContent = "Starting...";
-    try {
-      const res = await adminPost({ action: "start_sequence", sequence: seq });
-      showStatus(seqStatus, res.success ? "Started: " + seq : (res.error || "Failed"), res.success);
-    } catch(e){ showStatus(seqStatus, "Network error", false); }
-    startSeqBtn.disabled = false; startSeqBtn.textContent = "Start";
-  });
-
-  stopSeqBtn.addEventListener("click", async () => {
-    stopSeqBtn.disabled = true; stopSeqBtn.textContent = "Stopping...";
-    try {
-      const res = await adminPost({ action: "stop_playback" });
-      showStatus(seqStatus, res.success ? "Stopped" : (res.error || "Failed"), res.success);
-    } catch(e){ showStatus(seqStatus, "Network error", false); }
-    stopSeqBtn.disabled = false; stopSeqBtn.textContent = "Stop";
-  });
-
-  // ====== Options: WiFi Password ======
-  const optsToggle = document.getElementById("optsToggle");
-  const optsBody = document.getElementById("optsBody");
-  optsToggle.addEventListener("click", () => {
-    const open = optsBody.classList.toggle("open");
-    optsToggle.innerHTML = open ? "&#9650; Options" : "&#9660; Options";
-  });
-
-  // -- SSID --
-  const newSSIDInput = document.getElementById("newSSID");
-  const changeSSIDBtn = document.getElementById("changeSSID");
-  const ssidStatus = document.getElementById("ssidStatus");
-
-  changeSSIDBtn.addEventListener("click", async () => {
-    const ssid = newSSIDInput.value.trim();
-    if(!ssid){ showStatus(ssidStatus, "Enter an SSID", false); return; }
-    if(ssid.length > 32){ showStatus(ssidStatus, "SSID must be 1-32 characters", false); return; }
-    changeSSIDBtn.disabled = true; changeSSIDBtn.textContent = "Changing...";
-    try {
-      const res = await adminPost({ action: "change_ssid", ssid: ssid });
-      if(res.success){
-        showStatus(ssidStatus, res.message || "SSID changed!", true);
-        newSSIDInput.value = "";
-        newSSIDInput.placeholder = ssid;
-      } else {
-        showStatus(ssidStatus, res.error || "Failed", false);
-      }
-    } catch(e){ showStatus(ssidStatus, "Network error", false); }
-    changeSSIDBtn.disabled = false; changeSSIDBtn.textContent = "Change SSID";
-  });
-
-  // -- Password --
-  const newPassInput = document.getElementById("newPass");
-  const changePassBtn = document.getElementById("changePass");
-  const passStatus = document.getElementById("passStatus");
-
-  changePassBtn.addEventListener("click", async () => {
-    const pw = newPassInput.value;
-    if(pw.length < 8 || pw.length > 63){
-      showStatus(passStatus, "Password must be 8-63 characters", false); return;
     }
-    changePassBtn.disabled = true; changePassBtn.textContent = "Changing...";
-    try {
-      const res = await adminPost({ action: "change_password", password: pw });
-      if(res.success){
-        showStatus(passStatus, "Password changed! Reconnect with new password.", true);
-        newPassInput.value = "";
-      } else {
-        showStatus(passStatus, res.error || "Failed", false);
-      }
-    } catch(e){ showStatus(passStatus, "Network error", false); }
-    changePassBtn.disabled = false; changePassBtn.textContent = "Change Password";
-  });
+    audio.pause();
+    audio.currentTime=0;
+    audio.playbackRate=1.0;
+    pllReset();
+    errHistoryAll=[];errHistory2s=[];
+    needInitialSeek=false;
+    awaitingStart=false;
+    wasPlaying=false;
+    return;
+  }
+
+  // --- Pause State ---
+  if(msg.state==='pause'){
+    log('STATE: pause');
+    audio.pause();
+    audio.playbackRate=1.0;
+    pllReset();
+    errHistoryAll=[];errHistory2s=[];
+    needInitialSeek=false;
+    awaitingStart=false;
+    return;
+  }
+
+  // --- Playing ---
+  wasPlaying=true;
+
+  // Target position calculation
+  const nowMs=Date.now();
+  const serverMs=Number(msg.server_ms);
+  const rawPosMs=Number(msg.pos_ms||0);
+
+  let targetMs=rawPosMs;
+  const serverOk=Number.isFinite(serverMs)&&serverMs>1e12&&Math.abs(nowMs-serverMs)<300000;
+  if(serverOk){
+    let elapsed;
+    if(clockOffsetValid){
+      elapsed=(nowMs+clockOffset)-serverMs;
+    }else{
+      elapsed=nowMs-serverMs;
+    }
+    if(!Number.isFinite(elapsed))elapsed=0;
+    elapsed=clamp(elapsed,0,300);
+    targetMs=rawPosMs+elapsed;
+  }else{
+    log('SERVER_MS INVALID: '+serverMs+' nowMs='+nowMs+' diff='+Math.abs(nowMs-serverMs));
+  }
+
+  const targetSec=targetMs/1000.0;
+  const localSec=audio.currentTime||0;
+  const errMs=(targetSec-localSec)*1000.0;
+
+  lastRawPosMs=rawPosMs;
+  lastTargetMs=targetMs;
+  lastLocalMs=localSec*1000;
+
+  localEl.textContent=Math.round(localSec*1000);
+  targetEl.textContent=Math.round(targetMs);
+
+  if(lastCorrectionMs>0){
+    const ago=Math.round((nowMs-lastCorrectionMs)/1000);
+    lastCorrectionEl.textContent=ago+'s ago';
+  }
+  playLatencyEl.textContent=Math.round(playLatencyMs);
+
+  // Gate: wait for clock offset calibration
+  if(offsetHistory.length<MIN_OFFSET_SAMPLES){
+    errEl.textContent='(clock cal '+offsetHistory.length+'/'+MIN_OFFSET_SAMPLES+')';
+    if(++logThrottle%10===0)log('CLOCK CAL: '+offsetHistory.length+'/'+MIN_OFFSET_SAMPLES+' offset samples');
+    return;
+  }
+
+  // Immediate start
+  if(needInitialSeek&&haveMetadata){
+    needInitialSeek=false;
+    audio.currentTime=clamp(targetSec,0,Math.max(0,audio.duration-0.1));
+    log('PLAY NOW: seek to '+Math.round(targetSec*1000)+'ms, PLL will converge after settle');
+    sendReport('INITIAL_SEEK',errMs,1.0);
+    settleUntil=nowMs+1500;
+    effRateWallMs=nowMs;
+    effRateLocalMs=targetSec*1000;
+    playCallWallMs=Date.now();
+    playCallAudioPos=audio.currentTime;
+    playAttempting=true;
+    safePlay().finally(()=>{playAttempting=false;});
+    sendReport('START',0,1.0);
+    return;
+  }
+
+  if(needInitialSeek){
+    return;
+  }
+
+  // Settle period (1.5s)
+  if(nowMs<settleUntil){
+    if(playCallWallMs>0&&audio.currentTime!==playCallAudioPos){
+      const measuredMs=Date.now()-playCallWallMs;
+      playLatencyMs=playLatencyMs>0?(playLatencyMs*0.5+measuredMs*0.5):measuredMs;
+      playLatencyMs=clamp(playLatencyMs,0,500);
+      log('PLAY_LATENCY measured='+measuredMs+'ms estimate='+Math.round(playLatencyMs)+'ms');
+      try{localStorage.setItem(PLAY_LATENCY_KEY,Math.round(playLatencyMs).toString());}catch(e){}
+      playCallWallMs=0;
+    }
+    const sLocalMs=performance.now();
+    const sFppMs=targetMs;
+    if(pll.phase==='idle'){
+      pll.phase='calibrating';
+      pll.samples=[{localMs:sLocalMs,fppMs:sFppMs}];
+      pllStateEl.textContent='calibrating';
+      log('PLL: calibrating during settle');
+    }else if(pll.phase==='calibrating'){
+      pll.samples.push({localMs:sLocalMs,fppMs:sFppMs});
+      pllStateEl.textContent='cal '+pll.samples.length;
+    }
+    errEl.textContent='(settling)';
+    if(++logThrottle%10===0)log('SETTLE remaining='+(settleUntil-nowMs)+'ms samples='+pll.samples.length);
+    return;
+  }
+
+  // Resume if paused
+  if(audio.paused&&!playAttempting){
+    log('PLAY resuming (was paused)');
+    playAttempting=true;
+    safePlay().finally(()=>{playAttempting=false;});
+  }
+
+  // Normal PLL operation
+  errEl.textContent=Math.round(errMs);
+
+  // Error history
+  errHistoryAll.push(errMs);
+  if(errHistoryAll.length>100)errHistoryAll.shift();
+  const avgAll=errHistoryAll.length>0?(errHistoryAll.reduce((a,b)=>a+b,0)/errHistoryAll.length):0;
+  avgErrAllEl.textContent=Math.round(avgAll);
+
+  // 2-second rolling average (PLL error input)
+  errHistory2s.push({t:nowMs,err:errMs});
+  while(errHistory2s.length>0&&(nowMs-errHistory2s[0].t)>2000)errHistory2s.shift();
+  const avg2s=errHistory2s.length>0?(errHistory2s.reduce((a,b)=>a+b.err,0)/errHistory2s.length):0;
+  lastAvg2s=avg2s;
+  avgErr2sEl.textContent=Math.round(avg2s);
+
+  // Buffered data
+  let bufferedSec=0;
+  if(audio.buffered.length>0){bufferedSec=audio.buffered.end(audio.buffered.length-1)-localSec;}
+  bufferedEl.textContent=bufferedSec.toFixed(1);
+
+  if(!haveMetadata||!Number.isFinite(audio.duration)||audio.duration<=0){
+    return;
+  }
+
+  // Effective rate measurement (diagnostic)
+  if(effRateWallMs>0){
+    const dWall=nowMs-effRateWallMs;
+    const dLocal=(localSec*1000)-effRateLocalMs;
+    if(dWall>1000){
+      lastEffRate=dLocal/dWall;
+      effRateEl.textContent=lastEffRate.toFixed(4);
+      effRateWallMs=nowMs;
+      effRateLocalMs=localSec*1000;
+    }
+  }else{
+    effRateWallMs=nowMs;
+    effRateLocalMs=localSec*1000;
+  }
+
+  const localMs=performance.now();
+  const fppMs=targetMs;
+
+  // PLL Phase 1: Idle -> Calibrating
+  if(pll.phase==='idle'){
+    pll.phase='calibrating';
+    pll.samples=[{localMs,fppMs}];
+    audio.playbackRate=1.0;
+    pllStateEl.textContent='calibrating';
+    pllRateEl.textContent='1.000';
+    log('PLL: calibrating (need '+CAL_MIN_MS+'ms window)');
+    sendReport('SYNC',errMs,1.0);
+    return;
+  }
+
+  // PLL Phase 2: Calibrating
+  if(pll.phase==='calibrating'){
+    pll.samples.push({localMs,fppMs});
+    const calSpanMs=pll.samples.length>1?(pll.samples[pll.samples.length-1].localMs-pll.samples[0].localMs):0;
+    pllStateEl.textContent='cal '+Math.round(calSpanMs)+'ms';
+    pllRateEl.textContent='1.000';
+    errEl.textContent=Math.round(errMs)+' (cal)';
+
+    if(calSpanMs>=CAL_MIN_MS&&pll.samples.length>=6){
+      pll.baseRate=linearSlope(pll.samples);
+      if(pll.baseRate<0.99||pll.baseRate>1.01)pll.baseRate=1.0;
+      pll.phase='locked';
+      pll.anchorLocalMs=localMs;
+      pll.anchorFppMs=fppMs;
+      audio.playbackRate=pll.baseRate;
+      pllStateEl.textContent='locked';
+      log('PLL: locked baseRate='+pll.baseRate.toFixed(4)+' err='+Math.round(errMs)+'ms from '+pll.samples.length+' samples over '+Math.round(calSpanMs)+'ms');
+    }
+    sendReport('SYNC',errMs,audio.playbackRate);
+    return;
+  }
+
+  // PLL Phase 3: Locked
+  const phaseErr=targetSec-localSec;
+  pllStateEl.textContent='locked';
+
+  // Hard seek if error > 2s
+  if(Math.abs(phaseErr)>HARD_SEEK_S&&(nowMs-lastSeekMs)>SEEK_COOLDOWN_MS){
+    log('PLL: HARD SEEK err='+Math.round(phaseErr*1000)+'ms (staying locked)');
+    sendReport('CORRECTION',phaseErr*1000,audio.playbackRate);
+    audio.currentTime=clamp(targetSec,0,Math.max(0,audio.duration-0.1));
+    lastSeekMs=nowMs;
+    lastCorrectionMs=nowMs;
+    pll.anchorLocalMs=localMs;
+    pll.anchorFppMs=fppMs;
+    errHistoryAll=[];errHistory2s=[];
+    if(audio.paused&&!playAttempting){
+      playAttempting=true;
+      safePlay().finally(()=>{playAttempting=false;});
+    }
+    return;
+  }
+
+  // Adaptive proportional controller with log-compressed correction
+  const absAvg2s=Math.abs(lastAvg2s);
+  const Kp=Kp_BASE*(1+Kp_SCALE*Math.min(absAvg2s/200,1));
+  const rateInterval=absAvg2s>50?500:1000;
+  pllStateEl.textContent='locked Kp='+Kp.toFixed(3);
+
+  if((nowMs-pll.lastRateUpdateMs)>=rateInterval){
+    pll.lastRateUpdateMs=nowMs;
+    let rate=pll.baseRate;
+    if(absAvg2s>DEAD_ZONE_MS){
+      rate=pll.baseRate+Math.sign(lastAvg2s)*Kp*Math.log1p((absAvg2s-DEAD_ZONE_MS)/LOG_SCALE_MS);
+    }
+    rate=clamp(rate,1-MAX_ADJ,1+MAX_ADJ);
+    if(Math.abs(rate-audio.playbackRate)>MIN_RATE_CHANGE){
+      audio.playbackRate=rate;
+    }
+  }
+  pllRateEl.textContent=audio.playbackRate.toFixed(3);
+
+  // Rate learning
+  const dtLocal=localMs-pll.anchorLocalMs;
+  if(dtLocal>2000){
+    const dtFpp=fppMs-pll.anchorFppMs;
+    const instRate=dtFpp/dtLocal;
+    if(instRate>0.95&&instRate<1.05){
+      pll.baseRate=pll.baseRate*(1-RATE_EMA)+instRate*RATE_EMA;
+    }
+    pll.anchorLocalMs=localMs;
+    pll.anchorFppMs=fppMs;
+  }
+
+  sendReport('SYNC',errMs,audio.playbackRate);
+  if(++logThrottle%20===0)log('PLL err='+Math.round(phaseErr*1000)+'ms rate='+audio.playbackRate.toFixed(3)+'x base='+pll.baseRate.toFixed(4));
+}
+
+// Fetch version (eavesdrop JSON format)
+fetch("./version.php?t=" + Date.now()).then(r => r.json()).then(v => {
+  const verText = "Eavesdrop v" + (v.eavesdrop || "?") + " | FPP v" + (v.fpp || "?");
+  document.getElementById("ver").textContent = verText;
+  document.getElementById("verFooter").textContent = verText;
+}).catch(() => { document.getElementById("ver").textContent = "Version: unknown"; });
+
+// ====== Admin: Playback Controls ======
+function showStatus(el, msg, ok){
+  el.textContent = msg;
+  el.className = "status-msg " + (ok ? "success" : "error");
+  el.style.display = "block";
+  setTimeout(() => { el.style.display = "none"; }, 5000);
+}
+
+async function adminPost(data){
+  const fd = new FormData();
+  for(const k in data) fd.append(k, data[k]);
+  const r = await fetch("./admin.php", { method: "POST", body: fd });
+  return await r.json();
+}
+
+const seqSelect = document.getElementById("seqSelect");
+const startSeqBtn = document.getElementById("startSeq");
+const stopSeqBtn = document.getElementById("stopSeq");
+const seqStatus = document.getElementById("seqStatus");
+
+// Load playlists + sequences on page load
+(async function loadSequences(){
+  try {
+    const res = await adminPost({ action: "get_sequences" });
+    if(!res.success) return;
+    seqSelect.innerHTML = '<option value="">-- Select --</option>';
+    if(Array.isArray(res.playlists) && res.playlists.length > 0){
+      const grp = document.createElement("optgroup");
+      grp.label = "Playlists";
+      res.playlists.forEach(s => {
+        const o = document.createElement("option");
+        o.value = s; o.textContent = s;
+        grp.appendChild(o);
+      });
+      seqSelect.appendChild(grp);
+    }
+    if(Array.isArray(res.sequences) && res.sequences.length > 0){
+      const grp = document.createElement("optgroup");
+      grp.label = "Sequences";
+      res.sequences.forEach(s => {
+        const o = document.createElement("option");
+        o.value = s; o.textContent = s;
+        grp.appendChild(o);
+      });
+      seqSelect.appendChild(grp);
+    }
+  } catch(e){ seqSelect.innerHTML = '<option value="">Failed to load</option>'; }
+})();
+
+startSeqBtn.addEventListener("click", async () => {
+  const seq = seqSelect.value;
+  if(!seq){ showStatus(seqStatus, "Select a playlist or sequence first", false); return; }
+  startSeqBtn.disabled = true; startSeqBtn.textContent = "Starting...";
+  try {
+    const res = await adminPost({ action: "start_sequence", sequence: seq });
+    showStatus(seqStatus, res.success ? "Started: " + seq : (res.error || "Failed"), res.success);
+  } catch(e){ showStatus(seqStatus, "Network error", false); }
+  startSeqBtn.disabled = false; startSeqBtn.textContent = "Start";
+});
+
+stopSeqBtn.addEventListener("click", async () => {
+  stopSeqBtn.disabled = true; stopSeqBtn.textContent = "Stopping...";
+  try {
+    const res = await adminPost({ action: "stop_playback" });
+    showStatus(seqStatus, res.success ? "Stopped" : (res.error || "Failed"), res.success);
+  } catch(e){ showStatus(seqStatus, "Network error", false); }
+  stopSeqBtn.disabled = false; stopSeqBtn.textContent = "Stop";
+});
+
+
 })();
 </script>
 </body>
