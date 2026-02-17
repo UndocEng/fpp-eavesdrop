@@ -85,8 +85,9 @@
 
   <!-- Sync Status -->
   <div class="card">
+    <button id="enableBtn">Enable Audio</button>
     <div id="idleMsg" class="idle-msg">No show is currently broadcasting.</div>
-    <div id="nowPlaying" class="now-playing hidden">&#9835; <span id="trackName">-</span><div id="mediaFile" style="font-size:13px;color:var(--muted);margin-top:4px;"></div></div>
+    <div id="nowPlaying" class="now-playing hidden">&#9835; Now Playing<div id="trackName" style="margin-top:4px;">-</div><div id="mediaFile" style="font-size:13px;color:var(--muted);margin-top:2px;"></div></div>
 
     <div class="err" id="fetchErr"></div>
     <div class="err" id="playErr"></div>
@@ -146,7 +147,8 @@
 // =============================================================================
 
 // --- DOM References ---
-const audio=document.getElementById('audio'),
+const enableBtn=document.getElementById('enableBtn'),
+audio=document.getElementById('audio'),
 mediaFileEl=document.getElementById('mediaFile'),
 idleMsg=document.getElementById('idleMsg'),
 nowPlaying=document.getElementById('nowPlaying'),
@@ -445,24 +447,40 @@ async function pollOnce(){
 // =============================================================================
 // AUDIO PLAYBACK HELPERS
 // =============================================================================
+let audioUnlocked=false;
+
 async function safePlay(){
   try{
     const p=audio.play();
     if(p&&typeof p.catch==='function'){await p;}
     playErrEl.textContent='';
   }catch(e){
-    playErrEl.textContent='Audio playback blocked: '+(e?.message||e);
+    if(e&&e.name==='NotAllowedError'){
+      // Show the Enable button again so the user knows they need to tap
+      if(!audioUnlocked){enableBtn.classList.remove('hidden');}
+    }else{
+      playErrEl.textContent='Audio error: '+(e?.message||e);
+    }
   }
 }
 
 // =============================================================================
-// ENABLE BUTTON
+// AUDIO UNLOCK
 // =============================================================================
-// Auto-unlock audio on first user interaction (browser autoplay policy)
-let audioUnlocked=false;
+// Enable Audio button satisfies browser autoplay policy.
+// Polling and state detection run regardless — this only gates audio playback.
 function unlockAudio(){
   if(audioUnlocked)return;
   audioUnlocked=true;
+  enableBtn.classList.add('hidden');
+  playErrEl.textContent='';
+  // If audio already has a source and is paused (sync tried but was blocked), play it now
+  if(audio.src&&audio.paused&&currentBase){
+    playAttempting=true;
+    safePlay().finally(()=>{playAttempting=false;});
+    return;
+  }
+  // Otherwise warm up the audio context with a silent play/pause
   try{
     audio.muted=true;
     const p=audio.play();
@@ -472,8 +490,7 @@ function unlockAudio(){
     }else{audio.muted=false;}
   }catch(e){audio.muted=false;}
 }
-document.addEventListener('click',unlockAudio,{once:true});
-document.addEventListener('touchstart',unlockAudio,{once:true});
+enableBtn.onclick=unlockAudio;
 
 // Start transports immediately on page load
 pollEl.textContent='Connecting...';
@@ -516,11 +533,11 @@ async function syncInner(msg){
   }else{
     idleMsg.classList.add('hidden');
     nowPlaying.classList.remove('hidden');
-    trackName.textContent=msg.base;
+    trackName.textContent=msg.base+'.fseq';
     if(msg.mp3_url){
       mediaFileEl.textContent=msg.mp3_url.split('/').pop();
     }else{
-      mediaFileEl.textContent='';
+      mediaFileEl.textContent='No audio file found';
     }
   }
 
