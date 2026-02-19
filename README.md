@@ -16,7 +16,24 @@ A **show-owner developer tool** for Falcon Player (FPP). Runs on the master Pi a
 4. Auto-detects when sequences start from any source (FPP web UI, scheduler, API) and begins playing
 
 ---
+## Support This Project
 
+If this tool saved you time or made your show better, consider buying me a coffee or donate for me to get more tokkens:
+
+[![PayPal](https://img.shields.io/badge/PayPal-Donate-blue?logo=paypal)](https://www.paypal.com/donate/?hosted_button_id=Y66WZAYUA5ED6)
+
+<!--
+For non-GitHub pages that support scripts, use the hosted button:
+<div id="paypal-container-Y66WZAYUA5ED6"></div>
+<script>
+  paypal.HostedButtons({
+    hostedButtonId: "Y66WZAYUA5ED6",
+  }).render("#paypal-container-Y66WZAYUA5ED6")
+</script>
+-->
+
+
+---
 ## Important: Must Be Installed on the Master
 
 This must be installed on your **master** FPP (the one in **player mode**), not on a remote. It needs:
@@ -288,19 +305,3 @@ After ~12-14 seconds (settle + calibration), the phone stays locked to FPP's pos
 - **Audio unlock**: browser autoplay policy requires a user gesture — first click/touch on the page silently plays and pauses to unlock the audio context
 
 ---
-
-## Support This Project
-
-If this tool saved you time or made your show better, consider buying me a coffee:
-
-[![PayPal](https://img.shields.io/badge/PayPal-Donate-blue?logo=paypal)](https://www.paypal.com/donate/?hosted_button_id=Y66WZAYUA5ED6)
-
-<!--
-For non-GitHub pages that support scripts, use the hosted button:
-<div id="paypal-container-Y66WZAYUA5ED6"></div>
-<script>
-  paypal.HostedButtons({
-    hostedButtonId: "Y66WZAYUA5ED6",
-  }).render("#paypal-container-Y66WZAYUA5ED6")
-</script>
--->
