@@ -17,15 +17,34 @@ if [[ ! -d "$WEBROOT" ]]; then
   WEBROOT=""
 fi
 
-# 1. Stop and disable the listener-ap service (legacy, may not exist)
+# 1. Stop and disable the listener-ap service
+echo "[uninstall] Stopping listener-ap service..."
 if systemctl is-active listener-ap >/dev/null 2>&1; then
-  echo "[uninstall] Stopping listener-ap service..."
   sudo systemctl stop listener-ap
 fi
 if systemctl is-enabled listener-ap >/dev/null 2>&1; then
   sudo systemctl disable listener-ap
 fi
 sudo rm -f /etc/systemd/system/listener-ap.service
+echo "[uninstall] listener-ap service removed"
+
+# Kill any leftover hostapd/dnsmasq started by our script
+if pgrep -f "hostapd-listener.conf" >/dev/null 2>&1; then
+  sudo pkill -f "hostapd-listener.conf" || true
+  echo "[uninstall] Stopped listener hostapd"
+fi
+if pgrep -f "listener-dnsmasq.conf" >/dev/null 2>&1; then
+  sudo pkill -f "listener-dnsmasq.conf" || true
+  echo "[uninstall] Stopped listener dnsmasq"
+fi
+sudo rm -f /tmp/listener-dnsmasq.conf
+
+# Clean up nftables rules and policy routing added by listener-ap
+echo "[uninstall] Cleaning up network routing rules..."
+sudo nft delete table inet listener_ap 2>/dev/null || true
+sudo ip rule del fwmark 0x64 table 100 2>/dev/null || true
+sudo ip route flush table 100 2>/dev/null || true
+echo "[uninstall] Network routing rules removed"
 
 # 2. Stop and disable ws-sync service
 echo "[uninstall] Stopping ws-sync service..."
@@ -47,8 +66,10 @@ sudo rm -f /etc/apache2/conf-enabled/listener.conf
 sudo systemctl restart apache2 2>/dev/null || true
 echo "[uninstall] Apache listener config removed"
 
-# 4. Remove sudoers entry (legacy, may not exist)
+# 4. Remove sudoers entry
+echo "[uninstall] Removing sudoers entry..."
 sudo rm -f /etc/sudoers.d/listener-sync
+echo "[uninstall] Sudoers entry removed"
 
 # 5. Remove web files
 if [[ -n "$WEBROOT" ]]; then
@@ -73,6 +94,25 @@ echo "[uninstall] Removing listener config..."
 if [[ -d "/home/fpp/listen-sync" ]]; then
   sudo rm -rf /home/fpp/listen-sync
   echo "[uninstall] Config directory removed"
+fi
+
+# 8. Remove FPP plugin registration
+echo "[uninstall] Removing FPP plugin..."
+if [[ -d "/home/fpp/media/plugins/fpp-eavesdrop" ]]; then
+  sudo rm -rf /home/fpp/media/plugins/fpp-eavesdrop
+  echo "[uninstall] Plugin removed"
+fi
+
+# 9. Remove custom.js footer button
+CUSTOM_JS="/home/fpp/media/config/custom.js"
+if [[ -f "$CUSTOM_JS" ]] && grep -q "fpp-eavesdrop" "$CUSTOM_JS"; then
+  echo "[uninstall] Removing footer button from custom.js..."
+  sed -i '/-- fpp-eavesdrop/,/-- end fpp-eavesdrop --/d' "$CUSTOM_JS"
+  # Remove file if empty (only whitespace left)
+  if [[ ! -s "$CUSTOM_JS" ]] || ! grep -q '[^[:space:]]' "$CUSTOM_JS"; then
+    rm -f "$CUSTOM_JS"
+  fi
+  echo "[uninstall] Footer button removed"
 fi
 
 echo ""

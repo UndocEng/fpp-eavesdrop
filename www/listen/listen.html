@@ -10,7 +10,7 @@
       --card:#171a21;
       --ink:#e9eef7;
       --muted:#9aa6b2;
-      --accent:#00e5ff;
+      --accent:#D4A030;
       --bad:#ff4d4d;
       --ok:#4dff88;
     }
@@ -48,13 +48,18 @@
       width:100%; font-size:16px; padding:10px 12px; border-radius:10px;
       border:1px solid rgba(255,255,255,.12); background:rgba(0,0,0,.18); color:var(--ink);
     }
-    .btn-sm{ font-size:14px; padding:10px 14px; margin-top:10px; }
+    .btn-sm{ font-size:14px; padding:10px 14px; margin-top:10px; width:auto; display:inline-block; }
+    .opts-toggle{ cursor:pointer; color:var(--accent); font-size:15px; padding:4px 0; user-select:none; }
+    .opts-body{ display:none; margin-top:12px; }
+    .opts-body.open{ display:block; }
+    .field-group{ margin-top:14px; }
+    .field-group p{ margin:0 0 6px; font-size:14px; color:var(--muted); }
     .status-msg{ margin-top:8px; font-size:12px; padding:8px; border-radius:8px; display:none; }
     .status-msg.success{ background:rgba(77,255,136,.15); color:var(--ok); }
     .status-msg.error{ background:rgba(255,77,77,.15); color:var(--bad); }
     /* Sync UI */
     .idle-msg{ text-align:center; margin-top:16px; padding:16px; border:1px solid rgba(255,255,255,.06); border-radius:12px; background:rgba(0,0,0,.14); color:var(--muted); font-size:15px; }
-    .now-playing{ text-align:center; margin-top:14px; padding:12px; border:1px solid var(--accent); border-radius:12px; background:rgba(0,229,255,.06); font-size:16px; color:var(--accent); }
+    .now-playing{ text-align:center; margin-top:14px; padding:12px; border:1px solid var(--accent); border-radius:12px; background:rgba(212,160,48,.08); font-size:16px; color:var(--accent); }
     .err{ color:var(--bad); font-weight:600; font-size:13px; margin-top:6px; }
     .debug-toggle{ margin-top:14px; font-size:13px; color:var(--muted); opacity:.6; }
     .debug-toggle label{ cursor:pointer; }
@@ -70,6 +75,7 @@
     <h1>Show Audio</h1>
     <p class="sub" id="ver">v...</p>
     <p class="sub">Keep this page open during the show.</p>
+    <p class="sub" style="margin-top:8px;"><a href="/" style="color:var(--accent);text-decoration:none;">&#8592; Back to FPP</a></p>
   </div>
 
   <!-- Playback Control -- always visible -->
@@ -129,6 +135,43 @@
 
     <div class="footer" id="verFooter"></div>
   </div>
+
+  <!-- WiFi AP Options -- shown if any wlan interface exists -->
+  <div class="card" id="optionsCard" style="display:none;">
+    <div class="opts-toggle" id="optsToggle">&#9660; WiFi AP Settings</div>
+    <div class="opts-body" id="optsBody">
+      <div id="apStatusLine" style="font-size:13px;color:var(--muted);margin-bottom:8px;"></div>
+      <div class="field-group">
+        <p>AP Interface</p>
+        <select id="apIface">
+          <option value="wlan1">wlan1 — USB adapter</option>
+          <option value="wlan0">wlan0 — Single Board Show (SBS)</option>
+        </select>
+      </div>
+      <div class="field-group">
+        <p>Network Name (SSID)</p>
+        <input type="text" id="newSSID" placeholder="SHOW_AUDIO" maxlength="32">
+      </div>
+      <div class="field-group">
+        <p>Password (8-63 characters)</p>
+        <input type="password" id="newPass" maxlength="63">
+      </div>
+      <div class="field-group">
+        <p>AP IP Address</p>
+        <input type="text" id="newIP" placeholder="192.168.50.1">
+      </div>
+      <button id="applyAP" style="margin-top:14px;">Save &amp; Restart AP</button>
+      <div id="apStatus" class="status-msg"></div>
+      <div style="margin-top:12px;border-top:1px solid rgba(255,255,255,.08);padding-top:10px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+          <p style="margin:0;font-size:14px;color:var(--accent);">Connected Clients</p>
+          <button class="btn-sm" id="refreshClients" style="font-size:12px;padding:4px 10px;">Refresh</button>
+        </div>
+        <div id="clientList" style="font-size:13px;color:var(--muted);">--</div>
+      </div>
+    </div>
+  </div>
+
 
 </div>
 
@@ -861,6 +904,7 @@ const seqStatus = document.getElementById("seqStatus");
   try {
     const res = await adminPost({ action: "get_sequences" });
     if(!res.success) return;
+    initWiFiCard(res.has_wlan, res.current_ssid, res.ap_iface);
     seqSelect.innerHTML = '<option value="">-- Select --</option>';
     if(Array.isArray(res.playlists) && res.playlists.length > 0){
       const grp = document.createElement("optgroup");
@@ -888,6 +932,8 @@ const seqStatus = document.getElementById("seqStatus");
 startSeqBtn.addEventListener("click", async () => {
   const seq = seqSelect.value;
   if(!seq){ showStatus(seqStatus, "Select a playlist or sequence first", false); return; }
+  // User tapped Start — this is a gesture, so unlock audio now
+  unlockAudio();
   startSeqBtn.disabled = true; startSeqBtn.textContent = "Starting...";
   try {
     const res = await adminPost({ action: "start_sequence", sequence: seq });
@@ -903,6 +949,135 @@ stopSeqBtn.addEventListener("click", async () => {
     showStatus(seqStatus, res.success ? "Stopped" : (res.error || "Failed"), res.success);
   } catch(e){ showStatus(seqStatus, "Network error", false); }
   stopSeqBtn.disabled = false; stopSeqBtn.textContent = "Stop";
+});
+
+
+// ====== Admin: WiFi AP Settings ======
+const optionsCard = document.getElementById("optionsCard");
+const optsToggle = document.getElementById("optsToggle");
+const optsBody = document.getElementById("optsBody");
+const apStatusLine = document.getElementById("apStatusLine");
+const apStatus = document.getElementById("apStatus");
+
+let _noWlan = false;
+optsToggle.addEventListener("click", () => {
+  const open = optsBody.classList.toggle("open");
+  const arrow = open ? "&#9650;" : "&#9660;";
+  const warn = _noWlan ? " — <span style='color:var(--bad)'>No WiFi interface detected</span>" : "";
+  optsToggle.innerHTML = arrow + " WiFi AP Settings" + warn;
+});
+
+// Show WiFi card — with warning if no wlan interface
+function initWiFiCard(hasWlan, currentSSID, apIface) {
+  optionsCard.style.display = "";
+  if (!hasWlan) {
+    _noWlan = true;
+    optsToggle.innerHTML = "&#9660; WiFi AP Settings — <span style='color:var(--bad)'>No WiFi interface detected</span>";
+    apStatusLine.innerHTML = "<span style='color:var(--bad);font-weight:600'>No WiFi interface detected. Settings saved here will apply when an interface is available.</span>";
+    return;
+  }
+  if (apIface) document.getElementById("apIface").value = apIface;
+  if (currentSSID) document.getElementById("newSSID").placeholder = currentSSID;
+  loadAPConfig();
+}
+
+async function loadAPConfig() {
+  try {
+    const res = await adminPost({ action: "get_ap_config" });
+    if (!res.success) return;
+    if (res.ap_iface) {
+      document.getElementById("apIface").value = res.ap_iface;
+      document.getElementById("apIface").dataset.current = res.ap_iface;
+    }
+    if (res.ssid) document.getElementById("newSSID").placeholder = res.ssid;
+    if (res.ip) document.getElementById("newIP").placeholder = res.ip;
+    const sbsLabel = res.ap_iface === 'wlan0' ? ' (SBS)' : '';
+    let statusHtml = "AP " + (res.service_active ? "active" : "inactive") +
+      " | " + esc(res.ap_iface || "?") + sbsLabel +
+      " | SSID: " + esc(res.ssid || "?") + " | IP: " + esc(res.ip || "?");
+    if (res.ap_iface === 'wlan0' && res.tether_label) {
+      const tetherColor = res.tether_state === '2' ? 'var(--good, #4a4)' : 'var(--bad, #f44)';
+      statusHtml += ' | FPP tether: <span style="color:' + tetherColor + '">' + esc(res.tether_label) + '</span>';
+    }
+    if (res.subnet_conflict) {
+      statusHtml += '<div style="color:var(--bad);margin-top:6px;font-weight:600;">&#9888; ' + esc(res.subnet_conflict) + '</div>';
+    }
+    apStatusLine.innerHTML = statusHtml;
+    loadAPClients();
+  } catch(e) {}
+}
+
+async function loadAPClients() {
+  const el = document.getElementById("clientList");
+  try {
+    const res = await adminPost({ action: "get_ap_clients" });
+    if (!res.success) { el.textContent = "Error loading clients"; return; }
+    if (res.count === 0) { el.textContent = "No clients connected"; return; }
+    let html = "<table style='width:100%;font-size:13px;border-collapse:collapse;'>";
+    html += "<tr style='color:var(--accent);border-bottom:1px solid rgba(255,255,255,.1);'><td style='padding:3px 6px;'>IP</td><td style='padding:3px 6px;'>MAC</td><td style='padding:3px 6px;'>Host</td></tr>";
+    res.clients.forEach(c => {
+      html += "<tr style='border-bottom:1px solid rgba(255,255,255,.04);'>";
+      html += "<td style='padding:3px 6px;'>" + esc(c.ip) + "</td>";
+      html += "<td style='padding:3px 6px;font-family:monospace;font-size:12px;'>" + esc(c.mac) + "</td>";
+      html += "<td style='padding:3px 6px;'>" + esc(c.hostname || "-") + "</td>";
+      html += "</tr>";
+    });
+    html += "</table>";
+    el.innerHTML = html;
+  } catch(e) { el.textContent = "Error loading clients"; }
+}
+function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+
+document.getElementById("refreshClients").addEventListener("click", loadAPClients);
+
+document.getElementById("applyAP").addEventListener("click", async () => {
+  const iface = document.getElementById("apIface").value;
+  const ssid = document.getElementById("newSSID").value.trim();
+  const pass = document.getElementById("newPass").value;
+  const ip = document.getElementById("newIP").value.trim();
+
+  // Validate fields that have values
+  if (ssid && (ssid.length < 1 || ssid.length > 32)) {
+    showStatus(apStatus, "SSID must be 1-32 characters", false); return;
+  }
+  if (pass && (pass.length < 8 || pass.length > 63)) {
+    showStatus(apStatus, "Password must be 8-63 characters", false); return;
+  }
+  if (ip && !/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
+    showStatus(apStatus, "Enter a valid IPv4 address", false); return;
+  }
+
+  // Build confirm message
+  let changes = [];
+  if (iface === 'wlan0') changes.push("SBS mode (onboard WiFi) — FPP tether will be disabled");
+  if (ssid) changes.push("SSID: " + ssid);
+  if (pass) changes.push("Password: (changed)");
+  if (ip) changes.push("IP: " + ip);
+  if (changes.length === 0 && iface === document.getElementById("apIface").dataset.current) {
+    showStatus(apStatus, "No changes to apply", false); return;
+  }
+  const msg = "Save and restart AP?\n\n" + (changes.length ? changes.join("\n") : "Restart AP with current settings");
+  if (!confirm(msg)) return;
+
+  const btn = document.getElementById("applyAP");
+  btn.disabled = true; btn.textContent = "Saving...";
+  try {
+    const res = await adminPost({
+      action: "save_ap_config",
+      iface: iface,
+      ssid: ssid || "",
+      password: pass || "",
+      ip: ip || ""
+    });
+    showStatus(apStatus, res.success ? res.message : (res.error || "Failed"), res.success);
+    if (res.success) {
+      document.getElementById("newSSID").value = "";
+      document.getElementById("newPass").value = "";
+      document.getElementById("newIP").value = "";
+      loadAPConfig();
+    }
+  } catch(e) { showStatus(apStatus, "Network error", false); }
+  btn.disabled = false; btn.textContent = "Save & Restart AP";
 });
 
 

@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/home/fpp/fpp-eavesdrop/server/listener-ap.sh
+ExecStart=/home/fpp/listen-sync/listener-ap.sh
 ExecStop=/bin/bash -c 'pkill -f hostapd-listener.conf || true; pkill -f listener-dnsmasq.conf || true'
 
 [Install]
