@@ -1,4 +1,4 @@
-# FPP Eavesdrop
+# FPP Owner Eavesdrop
 
 A **show-owner developer tool** for Falcon Player (FPP). Runs on the master Pi and gives you full control: start/stop sequences and playlists, and hear synchronized show audio on your phone — all from one page.
 
