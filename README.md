@@ -4,7 +4,7 @@ A **show-owner developer tool** for Falcon Player (FPP). Runs on the master Pi a
 
 > **Tested on FPP 9.4** (Raspberry Pi OS Bookworm). Should work on any FPP version that uses `/opt/fpp/www/` as its web root (FPP 6+).
 
-> **This is NOT the visitor-facing listener.** For an open WiFi hotspot that lets your audience listen along, see [fpp-listener-sync](https://github.com/UndocEng/fpp-listener-sync) (runs on a remote). **Eavesdrop** runs on the master with direct API access.
+> **This is NOT the visitor-facing listener.** For an open WiFi hotspot that lets your audience listen along while keeping connected deviices isoolated and blocking FPP from intrusion, see [fpp-listener-sync](https://github.com/UndocEng/fpp-listener-sync) (runs on a remote). **Eavesdrop** runs on the master with direct API access.
 
 ---
 
@@ -12,8 +12,10 @@ A **show-owner developer tool** for Falcon Player (FPP). Runs on the master Pi a
 
 1. Serves a control page where the show owner can start/stop playlists and sequences
 2. Syncs show audio to the owner's phone using an adaptive PLL with WebSocket transport
-3. Accessible from your show network — just navigate to `http://YOUR_FPP_IP/listen/`
+3. Registers as an FPP plugin with a header icon and footer button for quick access 
 4. Auto-detects when sequences start from any source (FPP web UI, scheduler, API) and begins playing
+5. Optional WiFi access point (wlan1) — I developed this to run a couple of WLED bulbs without needing a separate AP. I don't recommend it for shows that transmit a lot of pixel data or use remotes
+6. Accessible from your show network — just click the navigate to `http://YOUR_FPP_IP/listen/` or the new button/icon.
 
 ---
 ## Support This Project
@@ -40,7 +42,7 @@ This must be installed on your **master** FPP (the one in **player mode**), not 
 
 - Direct access to the music files in `/home/fpp/media/music/`
 - The FPP API at `127.0.0.1` to read playback status and start/stop playlists
-- Remotes don't have to store media locally — they only receive channel data from the master
+- Remotes don't have to store media locally — they only receive channel data from the master. Typically, there is no media to play on a remote.
 - No seperate USB wifi adapter is needed
 
 If your master controls the show, that's where this goes.
@@ -102,18 +104,24 @@ sudo ./install.sh
 You should see output like this:
 ```
 =========================================
-  FPP Eavesdrop - v3.2
+  FPP Eavesdrop - v3.4
 =========================================
 
 [install] Web root: /opt/fpp/www
 [install] Deploying web files...
 [install] Web files deployed
 [install] Created /music symlink
+[install] Default AP config created (IP: 192.168.50.1)
+[install] Default WiFi password: Listen123
+[install] Sudoers configured
+[install] listener-ap service installed
 [install] python3-websockets already installed
 [install] ws-sync-server.py deployed
 [install] ws-sync service installed and started
 [install] Apache listener config deployed
 [install] Apache restarted
+[install] Plugin registered
+[install] Footer button added
 
 [install] Running self-tests...
 [test] ws-sync service: OK
@@ -124,6 +132,9 @@ You should see output like this:
 =========================================
   Page:  http://YOUR_FPP_IP/listen/
   Sync:  WebSocket (ws://YOUR_FPP_IP/ws)
+  WiFi:  SHOW_AUDIO (WPA2)
+  AP IP: 192.168.50.1
+  Pass:  Listen123 (change via web UI)
 =========================================
 ```
 
@@ -219,8 +230,13 @@ This removes:
 - All web files from `/opt/fpp/www/listen/`
 - The `/music` symlink
 - The `ws-sync` WebSocket service (stopped and disabled)
+- The `listener-ap` WiFi AP service (stopped, hostapd/dnsmasq killed)
 - The Apache WebSocket proxy configuration
-- The config directory at `/home/fpp/listen-sync/`
+- The sudoers entry for WiFi management
+- The config directory at `/home/fpp/listen-sync/` (AP config, hostapd config, scripts)
+- The FPP plugin registration and header icon
+- The Eavesdrop footer button from `custom.js`
+- Network routing rules (nftables, policy routes) added by the AP
 
 After uninstalling, your FPP is exactly as it was before. You can then delete the project folder:
 
@@ -234,16 +250,21 @@ rm -rf /home/fpp/fpp-eavesdrop
 
 | File | What it does |
 |------|-------------|
-| `www/listen/listen.html` | Main page — playback controls, audio sync, debug UI |
+| `www/listen/listen.html` | Main page — playback controls, audio sync, WiFi AP settings, debug UI |
 | `www/listen/index.html` | Redirects to listen.html |
 | `www/listen/status.php` | Returns current FPP playback status as JSON |
-| `www/listen/admin.php` | Handles start/stop commands |
+| `www/listen/admin.php` | Handles start/stop commands, WiFi AP config (SSID, password, IP), connected clients |
 | `www/listen/version.php` | Returns version info |
 | `www/listen/logo.png` | Undocumented Engineer logo |
 | `server/ws-sync-server.py` | Python WebSocket server — bridges FPP status to clients at 100ms |
+| `server/listener-ap.sh` | Brings up WPA2 access point on wlan1 with hostapd, dnsmasq, and nftables routing |
+| `server/listener-ap.service` | Systemd service for the WiFi access point |
 | `config/ws-sync.service` | Systemd service for the WebSocket server |
 | `config/apache-listener.conf` | Apache config — proxies `/ws` to the WebSocket server |
-| `install.sh` | Installs everything |
+| `config/ap.conf` | Default AP IP/netmask template (deployed if not present on Pi) |
+| `api.php` | FPP plugin API — header indicator icon linking to the listen page |
+| `pluginInfo.json` | FPP plugin metadata for plugin manager registration |
+| `install.sh` | Installs everything (web files, services, AP, plugin, sudoers) |
 | `uninstall.sh` | Removes everything (restores FPP to original state) |
 
 ---

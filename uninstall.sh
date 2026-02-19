@@ -39,6 +39,13 @@ if pgrep -f "listener-dnsmasq.conf" >/dev/null 2>&1; then
 fi
 sudo rm -f /tmp/listener-dnsmasq.conf
 
+# Clean up nftables rules and policy routing added by listener-ap
+echo "[uninstall] Cleaning up network routing rules..."
+sudo nft delete table inet listener_ap 2>/dev/null || true
+sudo ip rule del fwmark 0x64 table 100 2>/dev/null || true
+sudo ip route flush table 100 2>/dev/null || true
+echo "[uninstall] Network routing rules removed"
+
 # 2. Stop and disable ws-sync service
 echo "[uninstall] Stopping ws-sync service..."
 if systemctl is-active ws-sync >/dev/null 2>&1; then
