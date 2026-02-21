@@ -831,7 +831,28 @@ function btScan() {
   $devices = [];
   foreach ($devOut as $line) {
     if (preg_match('/^Device\s+([0-9A-Fa-f:]{17})\s+(.+)$/', $line, $m)) {
-      $devices[] = ["mac" => $m[1], "name" => trim($m[2])];
+      $mac  = $m[1];
+      $name = trim($m[2]);
+
+      // bluetoothctl often returns MAC-with-dashes as the name for
+      // unresolved devices. Query 'info' to get the real friendly name.
+      $macDashed = str_replace(':', '-', $mac);
+      if ($name === $macDashed || $name === $mac) {
+        $infoOut = [];
+        exec("sudo /usr/bin/bluetoothctl info " . escapeshellarg($mac) . " 2>&1", $infoOut);
+        foreach ($infoOut as $infoLine) {
+          $infoLine = trim($infoLine);
+          if (preg_match('/^(?:Name|Alias):\s+(.+)$/', $infoLine, $im)) {
+            $resolved = trim($im[1]);
+            if ($resolved !== $macDashed && $resolved !== $mac) {
+              $name = $resolved;
+              break;
+            }
+          }
+        }
+      }
+
+      $devices[] = ["mac" => $mac, "name" => $name];
     }
   }
 
@@ -907,13 +928,30 @@ function btStatus() {
     }
   }
 
-  // Get connected devices
+  // Get connected devices (resolve friendly names via 'info' if needed)
   $connected = [];
   if ($available) {
     exec("sudo /usr/bin/bluetoothctl devices Connected 2>&1", $connOut, $connRet);
     foreach ($connOut as $line) {
       if (preg_match('/^Device\s+([0-9A-Fa-f:]{17})\s+(.+)$/', $line, $m)) {
-        $connected[] = ["mac" => $m[1], "name" => trim($m[2])];
+        $mac  = $m[1];
+        $name = trim($m[2]);
+        $macDashed = str_replace(':', '-', $mac);
+        if ($name === $macDashed || $name === $mac) {
+          $infoOut = [];
+          exec("sudo /usr/bin/bluetoothctl info " . escapeshellarg($mac) . " 2>&1", $infoOut);
+          foreach ($infoOut as $infoLine) {
+            $infoLine = trim($infoLine);
+            if (preg_match('/^(?:Name|Alias):\s+(.+)$/', $infoLine, $im)) {
+              $resolved = trim($im[1]);
+              if ($resolved !== $macDashed && $resolved !== $mac) {
+                $name = $resolved;
+                break;
+              }
+            }
+          }
+        }
+        $connected[] = ["mac" => $mac, "name" => $name];
       }
     }
   }
