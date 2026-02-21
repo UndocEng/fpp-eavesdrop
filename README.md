@@ -1,10 +1,10 @@
-# FPP Eavesdrop
+# FPP Admin Eavesdrop
 
-A **show-owner developer tool** for Falcon Player (FPP). Runs on the master Pi and gives you full control: start/stop sequences and playlists, and hear synchronized show audio on your phone — all from one page.
+A **show-owner admin tool** for Falcon Player (FPP). Runs on the master Pi and gives you full control: start/stop sequences and playlists, manage WiFi AP settings, and hear synchronized show audio on your phone — all from one page.
 
 > **Tested on FPP 9.4** (Raspberry Pi OS Bookworm). Should work on any FPP version that uses `/opt/fpp/www/` as its web root (FPP 6+).
 
-> **This is NOT the visitor-facing listener.** For an open WiFi hotspot that lets your audience listen along while keeping connected deviices isoolated and blocking FPP from intrusion, see [fpp-listener-sync](https://github.com/UndocEng/fpp-listener-sync) (runs on a remote). **Eavesdrop** runs on the master with direct API access.
+> **This is NOT the visitor-facing listener.** For an audience-facing listen page, see [FPP Phone Listener](https://github.com/UndocEng/fpp-listener-sync). For a combined single-Pi setup with both admin and audience access points, see [FPP SBS+](https://github.com/UndocEng/fpp-eavesdrop-sbs-plus).
 
 ---
 
@@ -104,7 +104,7 @@ sudo ./install.sh
 You should see output like this:
 ```
 =========================================
-  FPP Eavesdrop - v3.4
+  FPP Admin Eavesdrop - v3.5
 =========================================
 
 [install] Web root: /opt/fpp/www
@@ -256,7 +256,7 @@ rm -rf /home/fpp/fpp-eavesdrop
 | `www/listen/admin.php` | Handles start/stop commands, WiFi AP config (SSID, password, IP), connected clients |
 | `www/listen/version.php` | Returns version info |
 | `www/listen/logo.png` | Undocumented Engineer logo |
-| `server/ws-sync-server.py` | Python WebSocket server — bridges FPP status to clients at 100ms |
+| `server/ws-sync-server.py` | Python WebSocket server — bridges FPP status to clients at 200ms |
 | `server/listener-ap.sh` | Brings up WPA2 access point on wlan1 with hostapd, dnsmasq, and nftables routing |
 | `server/listener-ap.service` | Systemd service for the WiFi access point |
 | `config/ws-sync.service` | Systemd service for the WebSocket server |
@@ -275,7 +275,7 @@ Eavesdrop uses an **adaptive Phase-Locked Loop (PLL)** to keep the phone's audio
 
 ### Transport
 
-The WebSocket server (`ws-sync-server.py`) polls FPP's API every 100ms and broadcasts state to all connected clients. The browser connects via WebSocket (proxied through Apache on port 80 at `/ws`), with automatic HTTP polling fallback if WebSocket is unavailable.
+The WebSocket server (`ws-sync-server.py`) polls FPP's API every 200ms and broadcasts state to all connected clients concurrently. The browser connects via WebSocket (proxied through Apache on port 80 at `/ws`), with automatic HTTP polling fallback if WebSocket is unavailable.
 
 NTP-style clock offset estimation uses ping/pong round-trips through the WebSocket, with a median filter + EWMA for stable offset calculation.
 
@@ -310,7 +310,7 @@ After ~12-14 seconds (settle + calibration), the phone stays locked to FPP's pos
 
 ## Technical Details (for developers)
 
-- **WebSocket transport**: Python asyncio server polls FPP every 100ms, broadcasts `{state, base, pos_ms, mp3_url, server_ms}` to all clients
+- **WebSocket transport**: Python asyncio server polls FPP every 200ms, broadcasts `{state, base, pos_ms, mp3_url, server_ms}` concurrently to all clients
 - **HTTP fallback**: 250ms polling of `status.php` when WebSocket is unavailable
 - **Clock offset**: NTP-style estimation via WebSocket ping/pong, median filter + EWMA (alpha=0.3)
 - **PLL calibration**: least-squares linear regression, 800ms minimum window, 6+ samples, base rate clamped to +/-1%
@@ -323,6 +323,33 @@ After ~12-14 seconds (settle + calibration), the phone stays locked to FPP's pos
 - **Apache proxy**: `mod_proxy_wstunnel` proxies `/ws` on port 80 to Python server on port 8080
 - **systemd service**: runs as `fpp` user with 64MB RAM / 25% CPU limits for Pi safety
 - **Playback control**: `POST /api/command` with "Start Playlist" / "Stop Now" commands
+- **Concurrent broadcast**: `asyncio.gather()` sends to all WebSocket clients simultaneously — prevents slow clients from blocking others
 - **Audio unlock**: browser autoplay policy requires a user gesture — first click/touch on the page silently plays and pauses to unlock the audio context
+- **Clock offset in serverOk**: uses `clockOffset` when validating server timestamps, so Pi clock drift doesn't break sync
+- **WiFi power save disabled**: `listener-ap.sh` disables brcmfmac power save after AP starts to prevent random disconnections
+
+---
+
+## Related Projects
+
+| Project | Description |
+|---------|-------------|
+| [FPP Phone Listener](https://github.com/UndocEng/fpp-listener-sync) | Audience-facing listen page — open WiFi AP, captive portal, audio sync only (no show controls) |
+| [FPP SBS+](https://github.com/UndocEng/fpp-eavesdrop-sbs-plus) | Combined single-Pi setup: Admin Eavesdrop (wlan0) + Phone Listener (wlan1) on one board |
+
+---
+
+## Changelog
+
+### v3.5
+- Renamed to **FPP Admin Eavesdrop**
+- **Sync fix**: removed 300ms elapsed clamp that caused wrong-direction PLL corrections; replaced with >2000ms discard
+- **Sync fix**: `serverOk` check now uses `clockOffset` compensation for accurate validation when Pi clock drifts
+- **Sync fix**: concurrent WebSocket broadcast via `asyncio.gather()` prevents slow clients from blocking others
+- **Fix**: `decodeURIComponent()` for media filenames with spaces (no more `%20` in display)
+- **Perf**: poll interval reduced from 100ms to 200ms — balances sync accuracy with Pi CPU load
+- **Stability**: WiFi power save disabled after AP starts (prevents brcmfmac random disconnections)
+- **Security**: added `AmbientCapabilities=CAP_SYS_TIME` to ws-sync.service for clock set support
+- **Install**: comprehensive CRLF fix for all file types (not just .sh and .py)
 
 ---

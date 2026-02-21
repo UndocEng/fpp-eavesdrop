@@ -4,7 +4,7 @@
 # Runs the Python WebSocket server that bridges FPP's playback state to
 # audience phones. Starts on boot, auto-restarts on crash.
 #
-# The server polls FPP's API every 100ms and broadcasts state to all
+# The server polls FPP's API every 200ms and broadcasts state to all
 # connected WebSocket clients. Also handles clock-sync pings and
 # receives sync telemetry reports from clients.
 #
@@ -40,6 +40,8 @@ CPUQuota=25%
 
 # Security: prevent the process from gaining new privileges (e.g., via setuid)
 NoNewPrivileges=true
+# Allow clock set from admin page "Set Clock" button (works with NoNewPrivileges)
+AmbientCapabilities=CAP_SYS_TIME
 
 [Install]
 WantedBy=multi-user.target

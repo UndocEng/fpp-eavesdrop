@@ -87,6 +87,10 @@ echo "[listener-ap] Starting hostapd..."
 sudo pkill -f "hostapd-listener.conf" || true
 sudo hostapd "$HOSTAPD_CONF" -B
 
+# Disable WiFi power save — brcmfmac enables it at boot which causes
+# random client disconnections and dropped packets on the AP
+sudo iw dev "$WLAN_IF" set power_save off 2>/dev/null || true
+
 # Route replies back to AP clients via wlan1 (fixes overlapping subnet with eth0)
 # Mark connections arriving on wlan1 via conntrack, restore mark on replies,
 # then policy-route marked replies out wlan1 instead of eth0.

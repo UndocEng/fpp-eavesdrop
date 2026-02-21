@@ -6,7 +6,7 @@ VERSION=$(cat "$ROOT_DIR/VERSION" 2>/dev/null || echo "unknown")
 
 echo ""
 echo "========================================="
-echo "  FPP Eavesdrop - v${VERSION}"
+echo "  FPP Admin Eavesdrop - v${VERSION}"
 echo "========================================="
 echo ""
 
@@ -63,10 +63,11 @@ echo "[install] Setting up listener config..."
 sudo mkdir -p "$LISTEN_SYNC"
 sudo chown fpp:fpp "$LISTEN_SYNC"
 
-# Fix Windows line endings on shell scripts (in case cloned on Windows)
+# Fix Windows line endings on all text files (in case cloned on Windows)
 if command -v sed >/dev/null 2>&1; then
-  sed -i 's/\r$//' "$ROOT_DIR/server/listener-ap.sh" 2>/dev/null || true
-  sed -i 's/\r$//' "$ROOT_DIR/server/ws-sync-server.py" 2>/dev/null || true
+  find "$ROOT_DIR" \( -name "*.sh" -o -name "*.py" -o -name "*.service" \
+    -o -name "*.conf" -o -name "*.html" -o -name "*.php" -o -name "*.htaccess*" \) \
+    -exec sed -i 's/\r$//' {} + 2>/dev/null || true
 fi
 
 # ====== WiFi Access Point ======
