@@ -81,7 +81,11 @@
   <div class="card">
     <h3 class="section-title">Test Sequence</h3>
     <div class="field-group" style="margin-top:0;">
-      <p>Start Channel</p>
+      <p>Universe</p>
+      <input type="number" id="universe" value="1" min="1" max="64" />
+    </div>
+    <div class="field-group">
+      <p>Start Channel (within universe, 1-512)</p>
       <input type="number" id="startCh" value="1" min="1" max="512" />
     </div>
     <div class="field-group">
@@ -274,8 +278,11 @@ function escHtml(s) {
 genBtn.addEventListener('click', () => {
   genBtn.disabled = true;
   genBtn.textContent = 'Generating...';
+  const universe = parseInt(document.getElementById('universe').value) || 1;
+  const chInUni = parseInt(document.getElementById('startCh').value) || 1;
+  const absCh = (universe - 1) * 512 + chInUni;
   post('generate_cal_fseq', {
-    start_ch: document.getElementById('startCh').value,
+    start_ch: absCh,
     ch_count: document.getElementById('chCount').value,
     flash_frames: document.getElementById('flashFrames').value
   }).then(res => {

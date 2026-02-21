@@ -709,8 +709,8 @@ function getAPClients() {
 // ── FSEQ Calibration ──────────────────────────────────────────────────
 
 function generateCalFSEQ($startCh, $chCount, $flashFrames) {
-  if ($startCh < 1 || $startCh > 512) {
-    return ["success" => false, "error" => "Start channel must be 1-512"];
+  if ($startCh < 1 || $startCh > 32768) {
+    return ["success" => false, "error" => "Start channel must be 1-32768"];
   }
   if ($chCount < 1 || $chCount > 16) {
     return ["success" => false, "error" => "Channel count must be 1-16"];
