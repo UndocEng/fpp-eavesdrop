@@ -121,6 +121,7 @@
       <div><b>Buffered:</b> <span id="buffered">-</span> s</div>
       <div><b>Last Correction:</b> <span id="lastCorrection">-</span></div>
       <div><b>Play Latency:</b> <span id="playLatency">0</span> ms</div>
+      <div><b>BT Delay:</b> <span id="btDelay">0</span> ms</div>
     </div>
 
     <div id="logControls" class="hidden" style="margin-top:8px;text-align:right;">
@@ -134,6 +135,22 @@
     <audio id="audio" preload="auto" playsinline></audio>
 
     <div class="footer" id="verFooter"></div>
+  </div>
+
+  <!-- BT Speaker Delay -->
+  <div class="card">
+    <h3 class="section-title">BT Speaker Delay</h3>
+    <div class="field-group" style="margin-top:0;">
+      <p>Profile</p>
+      <select id="btProfileSelect">
+        <option value="">None</option>
+      </select>
+    </div>
+    <div style="margin-top:8px;font-size:14px;">
+      Active delay: <b id="btDelayDisplay">0</b> ms
+      &nbsp;&middot;&nbsp;
+      <a href="calibrate.html" style="color:var(--accent);font-size:13px;">Calibrate</a>
+    </div>
   </div>
 
   <!-- WiFi AP Options -- shown if any wlan interface exists -->
@@ -256,9 +273,14 @@ const LOG_SCALE_MS=100;
 const HARD_SEEK_S=2.0;
 const RATE_EMA=0.05;
 const MIN_RATE_CHANGE=0.003;
+const JUMP_COLLECT_MS=1000;
+const JUMP_THRESHOLD_MS=200;
 
 // --- PLL State Machine ---
 const pll={phase:'idle',samples:[],baseRate:1.0,anchorLocalMs:0,anchorFppMs:0,lastRateUpdateMs:0};
+
+// --- Post-settle jump check ---
+let jumpCheck={active:false,startMs:0,errors:[]};
 
 // --- Effective Rate Measurement (diagnostic) ---
 let effRateWallMs=0, effRateLocalMs=0, lastEffRate=0;
@@ -273,11 +295,25 @@ try{
   if(saved){const v=Number(saved);if(v>=0&&v<1000)playLatencyMs=v;}
 }catch(e){}
 
+// --- BT Speaker Delay ---
+const BT_PROFILES_KEY='fpp-bt-profiles';
+let btDelayMs=0;
+try{
+  const raw=localStorage.getItem(BT_PROFILES_KEY);
+  if(raw){
+    const d=JSON.parse(raw);
+    if(d.activeProfile&&d.profiles&&d.profiles[d.activeProfile]){
+      btDelayMs=Number(d.profiles[d.activeProfile].delayMs)||0;
+    }
+  }
+}catch(e){}
+
 // --- Utilities ---
 function clamp(v,lo,hi){return Math.max(lo,Math.min(hi,v));}
 
 function pllReset(){
   pll.phase='idle';pll.samples=[];pll.baseRate=1.0;pll.anchorLocalMs=0;pll.anchorFppMs=0;pll.lastRateUpdateMs=0;
+  jumpCheck={active:false,startMs:0,errors:[]};
   if(audio)audio.playbackRate=1.0;
 }
 
@@ -658,7 +694,7 @@ async function syncInner(msg){
     if(!Number.isFinite(elapsed))elapsed=0;
     if(elapsed>2000){return;}
     if(elapsed<0)elapsed=0;
-    targetMs=rawPosMs+elapsed;
+    targetMs=rawPosMs+elapsed-btDelayMs;
   }else{
     log('SERVER_MS INVALID: '+serverMs+' nowMs='+nowMs+' diff='+Math.abs(nowMs-serverMs));
   }
@@ -739,6 +775,38 @@ async function syncInner(msg){
     log('PLAY resuming (was paused)');
     playAttempting=true;
     safePlay().finally(()=>{playAttempting=false;});
+  }
+
+  // Post-settle jump check: collect 1s of errors at rate 1.0, then jump if avg > 200ms
+  if(!jumpCheck.active&&jumpCheck.startMs===0){
+    jumpCheck={active:true,startMs:nowMs,errors:[]};
+    audio.playbackRate=1.0;
+    log('JUMP CHECK: collecting errors for '+JUMP_COLLECT_MS+'ms at rate 1.0');
+  }
+  if(jumpCheck.active){
+    jumpCheck.errors.push(errMs);
+    const elapsed=nowMs-jumpCheck.startMs;
+    errEl.textContent=Math.round(errMs)+' (jump check)';
+    if(elapsed>=JUMP_COLLECT_MS){
+      const avgErr=jumpCheck.errors.reduce((a,b)=>a+b,0)/jumpCheck.errors.length;
+      jumpCheck.active=false;
+      if(Math.abs(avgErr)>JUMP_THRESHOLD_MS){
+        // Seek ahead by play latency to compensate for audio pipeline rebuffer time
+        const leadSec=(playLatencyMs>0?playLatencyMs:500)/1000;
+        const seekTo=clamp(targetSec+leadSec,0,Math.max(0,audio.duration-0.1));
+        log('JUMP CHECK: avg='+Math.round(avgErr)+'ms > '+JUMP_THRESHOLD_MS+'ms — seeking to target+'+Math.round(leadSec*1000)+'ms');
+        sendReport('CORRECTION',avgErr,1.0);
+        audio.currentTime=seekTo;
+        audio.playbackRate=1.0;
+        lastSeekMs=nowMs;
+        lastCorrectionMs=nowMs;
+        errHistoryAll=[];errHistory2s=[];
+        pll.phase='idle';pll.samples=[];
+      }else{
+        log('JUMP CHECK: avg='+Math.round(avgErr)+'ms < '+JUMP_THRESHOLD_MS+'ms — no jump needed');
+      }
+    }
+    return;
   }
 
   // Normal PLL operation
@@ -1009,6 +1077,35 @@ async function loadAPConfig() {
   } catch(e) {}
 }
 
+function signalIcon(c) {
+  // If we have dBm signal, use it directly
+  if (c.signal != null) {
+    const s = c.signal;
+    if (s >= -50) return { bars: 3, color: 'var(--good)', label: s + ' dBm' };
+    if (s >= -65) return { bars: 2, color: 'var(--accent)', label: s + ' dBm' };
+    if (s >= -80) return { bars: 1, color: 'orange', label: s + ' dBm' };
+    return { bars: 0, color: 'var(--bad)', label: s + ' dBm' };
+  }
+  // Fallback: estimate from tx bitrate (2.4GHz 802.11n max ~72 Mbps)
+  if (c.tx_bitrate != null) {
+    const r = c.tx_bitrate;
+    if (r >= 54) return { bars: 3, color: 'var(--good)', label: r + ' Mbps' };
+    if (r >= 24) return { bars: 2, color: 'var(--accent)', label: r + ' Mbps' };
+    if (r >= 6)  return { bars: 1, color: 'orange', label: r + ' Mbps' };
+    return { bars: 0, color: 'var(--bad)', label: r + ' Mbps' };
+  }
+  return { bars: -1, color: '#666', label: '—' };
+}
+function barsHtml(info) {
+  if (info.bars < 0) return '<span style="color:#666;">—</span>';
+  let h = '';
+  for (let i = 0; i < 3; i++) {
+    const height = 6 + i * 4;
+    const on = i < info.bars;
+    h += '<span style="display:inline-block;width:4px;height:' + height + 'px;margin-right:1px;vertical-align:bottom;border-radius:1px;background:' + (on ? info.color : 'rgba(255,255,255,.15)') + ';"></span>';
+  }
+  return h;
+}
 async function loadAPClients() {
   const el = document.getElementById("clientList");
   try {
@@ -1016,12 +1113,16 @@ async function loadAPClients() {
     if (!res.success) { el.textContent = "Error loading clients"; return; }
     if (res.count === 0) { el.textContent = "No clients connected"; return; }
     let html = "<table style='width:100%;font-size:13px;border-collapse:collapse;'>";
-    html += "<tr style='color:var(--accent);border-bottom:1px solid rgba(255,255,255,.1);'><td style='padding:3px 6px;'>IP</td><td style='padding:3px 6px;'>MAC</td><td style='padding:3px 6px;'>Host</td></tr>";
+    html += "<tr style='color:var(--accent);border-bottom:1px solid rgba(255,255,255,.1);'><td style='padding:3px 6px;'>IP</td><td style='padding:3px 6px;'>Host</td><td style='padding:3px 6px;text-align:center;'>Signal</td><td style='padding:3px 6px;text-align:right;'>Tx Err</td></tr>";
     res.clients.forEach(c => {
+      const si = signalIcon(c);
+      const txFail = (c.tx_failed != null) ? c.tx_failed : '—';
+      const txColor = (c.tx_failed > 100) ? 'var(--bad)' : (c.tx_failed > 10) ? 'orange' : '';
       html += "<tr style='border-bottom:1px solid rgba(255,255,255,.04);'>";
       html += "<td style='padding:3px 6px;'>" + esc(c.ip) + "</td>";
-      html += "<td style='padding:3px 6px;font-family:monospace;font-size:12px;'>" + esc(c.mac) + "</td>";
       html += "<td style='padding:3px 6px;'>" + esc(c.hostname || "-") + "</td>";
+      html += "<td style='padding:3px 6px;text-align:center;' title='" + esc(si.label) + "'>" + barsHtml(si) + " <span style='font-size:11px;color:" + si.color + ";'>" + esc(si.label) + "</span></td>";
+      html += "<td style='padding:3px 6px;text-align:right;font-family:monospace;font-size:12px;" + (txColor ? "color:" + txColor + ";" : "") + "'>" + esc(String(txFail)) + "</td>";
       html += "</tr>";
     });
     html += "</table>";
@@ -1082,6 +1183,55 @@ document.getElementById("applyAP").addEventListener("click", async () => {
   btn.disabled = false; btn.textContent = "Save & Restart AP";
 });
 
+
+// ── BT Speaker Delay Profile UI ──────────────────────────────────────
+const btProfileSelect=document.getElementById('btProfileSelect');
+const btDelayDisplay=document.getElementById('btDelayDisplay');
+const btDelayDebug=document.getElementById('btDelay');
+
+function loadBTProfiles(){
+  try{
+    const raw=localStorage.getItem(BT_PROFILES_KEY);
+    if(raw)return JSON.parse(raw);
+  }catch(e){}
+  return {activeProfile:'',profiles:{}};
+}
+
+function refreshBTProfileUI(){
+  const data=loadBTProfiles();
+  btProfileSelect.innerHTML='<option value="">None</option>';
+  Object.keys(data.profiles).sort().forEach(name=>{
+    const opt=document.createElement('option');
+    opt.value=name;
+    opt.textContent=name+' ('+data.profiles[name].delayMs+'ms)';
+    btProfileSelect.appendChild(opt);
+  });
+  if(data.activeProfile&&data.profiles[data.activeProfile]){
+    btProfileSelect.value=data.activeProfile;
+    btDelayMs=Number(data.profiles[data.activeProfile].delayMs)||0;
+  }else{
+    btDelayMs=0;
+  }
+  btDelayDisplay.textContent=btDelayMs;
+  btDelayDebug.textContent=btDelayMs;
+}
+
+btProfileSelect.addEventListener('change',()=>{
+  const data=loadBTProfiles();
+  const name=btProfileSelect.value;
+  if(name&&data.profiles[name]){
+    btDelayMs=Number(data.profiles[name].delayMs)||0;
+    data.activeProfile=name;
+  }else{
+    btDelayMs=0;
+    data.activeProfile='';
+  }
+  try{localStorage.setItem(BT_PROFILES_KEY,JSON.stringify(data));}catch(e){}
+  btDelayDisplay.textContent=btDelayMs;
+  btDelayDebug.textContent=btDelayMs;
+});
+
+refreshBTProfileUI();
 
 })();
 </script>
