@@ -163,11 +163,11 @@
       <a href="listen.html" style="color:var(--accent);">Show Audio</a> page to apply the delay during playback.</p>
   </div>
 
-  <!-- Card 4: RPi Bluetooth (direct connection) -->
-  <div class="card">
+  <!-- Card 4: RPi Bluetooth (direct connection, USB adapter only) -->
+  <div class="card" id="btCard" style="display:none;">
     <h3 class="section-title">RPi Bluetooth Speaker</h3>
     <p style="font-size:13px;color:var(--muted);margin:0 0 10px;">
-      Connect a BT speaker directly to the Raspberry Pi for audio output.
+      Connect a BT speaker directly to the Raspberry Pi via USB Bluetooth adapter.
     </p>
     <div id="btStatusLine" style="font-size:13px;color:var(--muted);margin-bottom:8px;">Checking...</div>
     <div id="btVolumeWrap" style="display:none;margin-bottom:12px;">
@@ -535,6 +535,7 @@ deleteProfileBtn.addEventListener('click', () => {
 // CARD 4: RPi Bluetooth
 // =============================================================================
 
+const btCard = document.getElementById('btCard');
 const btScanBtn = document.getElementById('btScanBtn');
 const btDevices = document.getElementById('btDevices');
 const btStatusEl = document.getElementById('btStatus');
@@ -554,11 +555,13 @@ btVolumeSlider.addEventListener('input', () => {
 
 function refreshBTStatus() {
   post('bt_status', {}).then(res => {
-    if (!res.success) {
-      btStatusLine.textContent = 'Bluetooth unavailable';
-      btVolumeWrap.style.display = 'none';
+    if (!res.success || !res.usb_adapter) {
+      // Hide the entire BT card if no USB adapter present
+      btCard.style.display = 'none';
       return;
     }
+    // USB BT adapter detected — show the card
+    btCard.style.display = '';
     if (!res.available) {
       btStatusLine.textContent = 'No Bluetooth adapter detected';
       btScanBtn.disabled = true;
@@ -594,8 +597,7 @@ function refreshBTStatus() {
       btDevices.innerHTML = html;
     }
   }).catch(() => {
-    btStatusLine.textContent = 'Could not check BT status';
-    btVolumeWrap.style.display = 'none';
+    btCard.style.display = 'none';
   });
 }
 

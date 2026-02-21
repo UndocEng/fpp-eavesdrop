@@ -949,6 +949,17 @@ function btDisconnect($mac) {
 
 
 function btStatus() {
+  // Check for a USB BT adapter (onboard uses hci_uart_bcm, USB uses btusb)
+  $hasUsbAdapter = false;
+  $hciDevs = glob('/sys/class/bluetooth/hci*');
+  foreach ($hciDevs as $hci) {
+    $uevent = @file_get_contents($hci . '/device/uevent');
+    if ($uevent !== false && strpos($uevent, 'DRIVER=btusb') !== false) {
+      $hasUsbAdapter = true;
+      break;
+    }
+  }
+
   // Check if bluetooth controller is available and powered
   exec("sudo /usr/bin/bluetoothctl show 2>&1", $showOut, $showRet);
   $powered = false;
@@ -1004,6 +1015,7 @@ function btStatus() {
     "success" => true,
     "available" => $available,
     "powered" => $powered,
+    "usb_adapter" => $hasUsbAdapter,
     "connected" => $connected,
     "count" => count($connected),
     "volume" => $volume
