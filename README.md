@@ -104,7 +104,7 @@ sudo ./install.sh
 You should see output like this:
 ```
 =========================================
-  FPP Admin Eavesdrop - v3.5
+  FPP Admin Eavesdrop - v3.6
 =========================================
 
 [install] Web root: /opt/fpp/www
@@ -253,7 +253,8 @@ rm -rf /home/fpp/fpp-eavesdrop
 | `www/listen/listen.html` | Main page — playback controls, audio sync, WiFi AP settings, debug UI |
 | `www/listen/index.html` | Redirects to listen.html |
 | `www/listen/status.php` | Returns current FPP playback status as JSON |
-| `www/listen/admin.php` | Handles start/stop commands, WiFi AP config (SSID, password, IP), connected clients |
+| `www/listen/admin.php` | Handles start/stop commands, WiFi AP config, BT management, FSEQ calibration generation |
+| `www/listen/calibrate.html` | BT speaker delay calibration — generates test FSEQ, Web Audio click sync, profile management |
 | `www/listen/version.php` | Returns version info |
 | `www/listen/logo.png` | Undocumented Engineer logo |
 | `server/ws-sync-server.py` | Python WebSocket server — bridges FPP status to clients at 200ms |
@@ -340,6 +341,16 @@ After ~12-14 seconds (settle + calibration), the phone stays locked to FPP's pos
 ---
 
 ## Changelog
+
+### v3.6
+- **BT Speaker Delay**: new calibration page (`calibrate.html`) to measure and compensate for Bluetooth speaker latency
+  - Generates FSEQ v2.0 calibration sequence (1-second interval flashes on user-selected channels)
+  - Web Audio click generator synced to FPP position via WebSocket — adjust delay slider until click matches flash
+  - Named profiles saved in localStorage (e.g. "JBL Flip 6 — 180ms")
+- **BT Profile Selector** on listen.html — select a saved profile to subtract BT delay from PLL target
+- **RPi Direct Bluetooth**: scan, pair, connect, and disconnect BT speakers directly from the Pi via web UI
+- **Backend**: `admin.php` gains FSEQ generation (`generate_cal_fseq`), cleanup, and `bluetoothctl` wrapper actions
+- **Install**: deploys `calibrate.html`, adds sudoers for FSEQ writes and `bluetoothctl`, enables bluetooth service
 
 ### v3.5
 - Renamed to **FPP Admin Eavesdrop**

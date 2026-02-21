@@ -51,6 +51,31 @@ switch ($action) {
   case 'get_ap_clients':
     echo json_encode(getAPClients());
     break;
+  case 'generate_cal_fseq':
+    echo json_encode(generateCalFSEQ(
+      intval($_POST['start_ch'] ?? 1),
+      intval($_POST['ch_count'] ?? 3),
+      intval($_POST['flash_frames'] ?? 5)
+    ));
+    break;
+  case 'cleanup_cal_fseq':
+    echo json_encode(cleanupCalFSEQ());
+    break;
+  case 'bt_scan':
+    echo json_encode(btScan());
+    break;
+  case 'bt_pair':
+    echo json_encode(btPair($_POST['mac'] ?? ''));
+    break;
+  case 'bt_connect':
+    echo json_encode(btConnect($_POST['mac'] ?? ''));
+    break;
+  case 'bt_disconnect':
+    echo json_encode(btDisconnect($_POST['mac'] ?? ''));
+    break;
+  case 'bt_status':
+    echo json_encode(btStatus());
+    break;
   default:
     echo json_encode(["success" => false, "error" => "Unknown action"]);
 }
@@ -678,4 +703,226 @@ function getAPClients() {
   }
 
   return ["success" => true, "clients" => $clients, "count" => count($clients)];
+}
+
+
+// ── FSEQ Calibration ──────────────────────────────────────────────────
+
+function generateCalFSEQ($startCh, $chCount, $flashFrames) {
+  if ($startCh < 1 || $startCh > 512) {
+    return ["success" => false, "error" => "Start channel must be 1-512"];
+  }
+  if ($chCount < 1 || $chCount > 16) {
+    return ["success" => false, "error" => "Channel count must be 1-16"];
+  }
+  if ($flashFrames < 1 || $flashFrames > 25) {
+    return ["success" => false, "error" => "Flash frames must be 1-25"];
+  }
+
+  $maxCh = $startCh + $chCount - 1;
+  $channelsPerFrame = max(512, intval(ceil($maxCh / 512)) * 512);
+  $fps = 50;
+  $stepMs = 20;
+  $durationSec = 15;
+  $frameCount = $fps * $durationSec; // 750
+
+  // FSEQ v2.0 header (32 bytes)
+  $dataOffset = 32;
+  $header  = pack('a4', 'PSEQ');            // magic
+  $header .= pack('v', $dataOffset);        // channel data start (uint16 LE)
+  $header .= pack('C', 0);                  // minor version
+  $header .= pack('C', 2);                  // major version
+  $header .= pack('v', $dataOffset);        // variable header offset
+  $header .= pack('V', $channelsPerFrame);  // channels per frame (uint32 LE)
+  $header .= pack('V', $frameCount);        // frame count (uint32 LE)
+  $header .= pack('C', $stepMs);            // step time ms
+  $header .= pack('C', 0);                  // flags
+  $header .= pack('C', 0);                  // compression (0=none)
+  $header .= pack('C', 0);                  // compression blocks
+  $header .= pack('C', 0);                  // sparse ranges
+  $header .= pack('C', 0);                  // flags2
+  $header .= str_repeat("\x00", 8);          // UUID
+
+  // Build frame templates
+  $blankFrame = str_repeat("\x00", $channelsPerFrame);
+  $flashFrame = $blankFrame;
+  for ($c = $startCh - 1; $c < $startCh - 1 + $chCount; $c++) {
+    $flashFrame[$c] = "\xFF";
+  }
+
+  // Build set of flash frame indices (every 1 second, centered)
+  $halfFlash = intval($flashFrames / 2);
+  $flashSet = [];
+  for ($sec = 0; $sec < $durationSec; $sec++) {
+    $center = $sec * $fps;
+    for ($d = -$halfFlash; $d <= $halfFlash; $d++) {
+      $f = $center + $d;
+      if ($f >= 0 && $f < $frameCount) {
+        $flashSet[$f] = true;
+      }
+    }
+  }
+
+  // Generate frame data
+  $data = '';
+  for ($f = 0; $f < $frameCount; $f++) {
+    $data .= isset($flashSet[$f]) ? $flashFrame : $blankFrame;
+  }
+
+  // Write FSEQ file
+  $seqDir = '/home/fpp/media/sequences';
+  $fseqPath = $seqDir . '/_bt_cal.fseq';
+  $fileContent = $header . $data;
+
+  $written = @file_put_contents($fseqPath, $fileContent);
+  if ($written === false) {
+    // Fall back to temp file + sudo cp
+    $tmpFile = tempnam(sys_get_temp_dir(), 'fseq_');
+    file_put_contents($tmpFile, $fileContent);
+    exec("sudo /bin/cp " . escapeshellarg($tmpFile) . " " . escapeshellarg($fseqPath) . " 2>&1", $out, $ret);
+    exec("sudo /bin/chown fpp:fpp " . escapeshellarg($fseqPath) . " 2>&1");
+    unlink($tmpFile);
+    if ($ret !== 0) {
+      return ["success" => false, "error" => "Failed to write FSEQ file"];
+    }
+  }
+
+  return [
+    "success" => true,
+    "message" => "Calibration sequence generated",
+    "file" => "_bt_cal.fseq",
+    "channels" => $startCh . "-" . $maxCh,
+    "frames" => $frameCount,
+    "duration" => $durationSec . "s",
+    "flash_interval" => "1s",
+    "flash_frames" => $flashFrames
+  ];
+}
+
+
+function cleanupCalFSEQ() {
+  $fseqPath = '/home/fpp/media/sequences/_bt_cal.fseq';
+  if (file_exists($fseqPath)) {
+    $removed = @unlink($fseqPath);
+    if (!$removed) {
+      exec("sudo /bin/rm -f " . escapeshellarg($fseqPath) . " 2>&1", $out, $ret);
+      if ($ret !== 0) {
+        return ["success" => false, "error" => "Failed to remove calibration file"];
+      }
+    }
+  }
+  return ["success" => true, "message" => "Calibration file removed"];
+}
+
+
+// ── Bluetooth Management ──────────────────────────────────────────────
+
+function validateMAC($mac) {
+  return preg_match('/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/', $mac) === 1;
+}
+
+
+function btScan() {
+  // Power on the adapter, scan for 10 seconds, then list devices
+  exec("sudo /usr/bin/bluetoothctl power on 2>&1");
+  exec("sudo /usr/bin/bluetoothctl --timeout 10 scan on 2>&1", $scanOut, $scanRet);
+  exec("sudo /usr/bin/bluetoothctl devices 2>&1", $devOut, $devRet);
+
+  $devices = [];
+  foreach ($devOut as $line) {
+    if (preg_match('/^Device\s+([0-9A-Fa-f:]{17})\s+(.+)$/', $line, $m)) {
+      $devices[] = ["mac" => $m[1], "name" => trim($m[2])];
+    }
+  }
+
+  return ["success" => true, "devices" => $devices];
+}
+
+
+function btPair($mac) {
+  if (!validateMAC($mac)) {
+    return ["success" => false, "error" => "Invalid MAC address"];
+  }
+  $escapedMAC = escapeshellarg($mac);
+
+  exec("sudo /usr/bin/bluetoothctl pair $escapedMAC 2>&1", $pairOut, $pairRet);
+  exec("sudo /usr/bin/bluetoothctl trust $escapedMAC 2>&1", $trustOut, $trustRet);
+
+  $output = implode("\n", array_merge($pairOut, $trustOut));
+  $success = (strpos($output, "Pairing successful") !== false) ||
+             (strpos($output, "already exists") !== false);
+
+  return [
+    "success" => $success,
+    "message" => $success ? "Device paired and trusted" : "Pairing may require confirmation on the device",
+    "output" => $output
+  ];
+}
+
+
+function btConnect($mac) {
+  if (!validateMAC($mac)) {
+    return ["success" => false, "error" => "Invalid MAC address"];
+  }
+  $escapedMAC = escapeshellarg($mac);
+
+  exec("sudo /usr/bin/bluetoothctl connect $escapedMAC 2>&1", $out, $ret);
+  $output = implode("\n", $out);
+  $success = strpos($output, "Connection successful") !== false;
+
+  return [
+    "success" => $success,
+    "message" => $success ? "Connected" : "Connection failed",
+    "output" => $output
+  ];
+}
+
+
+function btDisconnect($mac) {
+  if (!validateMAC($mac)) {
+    return ["success" => false, "error" => "Invalid MAC address"];
+  }
+  $escapedMAC = escapeshellarg($mac);
+
+  exec("sudo /usr/bin/bluetoothctl disconnect $escapedMAC 2>&1", $out, $ret);
+  $output = implode("\n", $out);
+
+  return [
+    "success" => true,
+    "message" => "Disconnected",
+    "output" => $output
+  ];
+}
+
+
+function btStatus() {
+  // Check if bluetooth controller is available and powered
+  exec("sudo /usr/bin/bluetoothctl show 2>&1", $showOut, $showRet);
+  $powered = false;
+  $available = ($showRet === 0);
+  foreach ($showOut as $line) {
+    if (strpos($line, "Powered: yes") !== false) {
+      $powered = true;
+      break;
+    }
+  }
+
+  // Get connected devices
+  $connected = [];
+  if ($available) {
+    exec("sudo /usr/bin/bluetoothctl devices Connected 2>&1", $connOut, $connRet);
+    foreach ($connOut as $line) {
+      if (preg_match('/^Device\s+([0-9A-Fa-f:]{17})\s+(.+)$/', $line, $m)) {
+        $connected[] = ["mac" => $m[1], "name" => trim($m[2])];
+      }
+    }
+  }
+
+  return [
+    "success" => true,
+    "available" => $available,
+    "powered" => $powered,
+    "connected" => $connected,
+    "count" => count($connected)
+  ];
 }

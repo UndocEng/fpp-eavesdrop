@@ -3,7 +3,7 @@ set -euo pipefail
 
 echo ""
 echo "========================================="
-echo "  FPP Eavesdrop - Uninstall"
+echo "  FPP Admin Eavesdrop - Uninstall"
 echo "========================================="
 echo ""
 
@@ -87,6 +87,12 @@ if [[ -n "$WEBROOT" ]]; then
       echo "[uninstall] /music symlink points elsewhere ($LINK_TARGET) — leaving it"
     fi
   fi
+fi
+
+# 6b. Remove calibration FSEQ file
+if [[ -f "/home/fpp/media/sequences/_bt_cal.fseq" ]]; then
+  sudo rm -f /home/fpp/media/sequences/_bt_cal.fseq
+  echo "[uninstall] Removed calibration FSEQ"
 fi
 
 # 7. Remove listener config directory

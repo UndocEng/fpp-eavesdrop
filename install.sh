@@ -32,6 +32,7 @@ sudo cp -f "$ROOT_DIR/www/listen/listen.html" "$WEBROOT/listen/listen.html" 2>/d
 sudo cp -f "$ROOT_DIR/www/listen/status.php" "$WEBROOT/listen/status.php"
 sudo cp -f "$ROOT_DIR/www/listen/admin.php" "$WEBROOT/listen/admin.php"
 sudo cp -f "$ROOT_DIR/www/listen/version.php" "$WEBROOT/listen/version.php"
+sudo cp -f "$ROOT_DIR/www/listen/calibrate.html" "$WEBROOT/listen/calibrate.html" 2>/dev/null || true
 sudo cp -f "$ROOT_DIR/www/listen/logo.png" "$WEBROOT/listen/logo.png" 2>/dev/null || true
 sudo cp -f "$ROOT_DIR/VERSION" "$WEBROOT/listen/VERSION" 2>/dev/null || true
 
@@ -81,6 +82,12 @@ for pkg in hostapd dnsmasq; do
 done
 # Ensure hostapd is unmasked (Raspbian masks it by default)
 sudo systemctl unmask hostapd 2>/dev/null || true
+
+# Ensure Bluetooth is available for BT speaker feature
+if systemctl list-unit-files bluetooth.service >/dev/null 2>&1; then
+  sudo systemctl enable bluetooth 2>/dev/null || true
+  echo "[install] Bluetooth service enabled"
+fi
 
 # Deploy default AP config (if not already present)
 AP_CONF="$LISTEN_SYNC/ap.conf"
@@ -143,6 +150,12 @@ www-data ALL=(ALL) NOPASSWD: /usr/bin/tee /home/fpp/listen-sync/hostapd-listener
 www-data ALL=(ALL) NOPASSWD: /usr/bin/tee /home/fpp/listen-sync/ap.conf
 www-data ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart listener-ap.service
 www-data ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop hostapd
+# Allow www-data to write calibration FSEQ files
+www-data ALL=(ALL) NOPASSWD: /bin/cp /tmp/fseq_* /home/fpp/media/sequences/_bt_cal.fseq
+www-data ALL=(ALL) NOPASSWD: /bin/chown fpp\:fpp /home/fpp/media/sequences/_bt_cal.fseq
+www-data ALL=(ALL) NOPASSWD: /bin/rm -f /home/fpp/media/sequences/_bt_cal.fseq
+# Allow www-data to manage Bluetooth devices
+www-data ALL=(ALL) NOPASSWD: /usr/bin/bluetoothctl
 EOF
 sudo chmod 440 "$SUDOERS_FILE"
 

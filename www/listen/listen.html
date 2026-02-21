@@ -121,6 +121,7 @@
       <div><b>Buffered:</b> <span id="buffered">-</span> s</div>
       <div><b>Last Correction:</b> <span id="lastCorrection">-</span></div>
       <div><b>Play Latency:</b> <span id="playLatency">0</span> ms</div>
+      <div><b>BT Delay:</b> <span id="btDelay">0</span> ms</div>
     </div>
 
     <div id="logControls" class="hidden" style="margin-top:8px;text-align:right;">
@@ -134,6 +135,22 @@
     <audio id="audio" preload="auto" playsinline></audio>
 
     <div class="footer" id="verFooter"></div>
+  </div>
+
+  <!-- BT Speaker Delay -->
+  <div class="card">
+    <h3 class="section-title">BT Speaker Delay</h3>
+    <div class="field-group" style="margin-top:0;">
+      <p>Profile</p>
+      <select id="btProfileSelect">
+        <option value="">None</option>
+      </select>
+    </div>
+    <div style="margin-top:8px;font-size:14px;">
+      Active delay: <b id="btDelayDisplay">0</b> ms
+      &nbsp;&middot;&nbsp;
+      <a href="calibrate.html" style="color:var(--accent);font-size:13px;">Calibrate</a>
+    </div>
   </div>
 
   <!-- WiFi AP Options -- shown if any wlan interface exists -->
@@ -271,6 +288,19 @@ let playCallAudioPos=0;
 try{
   const saved=localStorage.getItem(PLAY_LATENCY_KEY);
   if(saved){const v=Number(saved);if(v>=0&&v<1000)playLatencyMs=v;}
+}catch(e){}
+
+// --- BT Speaker Delay ---
+const BT_PROFILES_KEY='fpp-bt-profiles';
+let btDelayMs=0;
+try{
+  const raw=localStorage.getItem(BT_PROFILES_KEY);
+  if(raw){
+    const d=JSON.parse(raw);
+    if(d.activeProfile&&d.profiles&&d.profiles[d.activeProfile]){
+      btDelayMs=Number(d.profiles[d.activeProfile].delayMs)||0;
+    }
+  }
 }catch(e){}
 
 // --- Utilities ---
@@ -658,7 +688,7 @@ async function syncInner(msg){
     if(!Number.isFinite(elapsed))elapsed=0;
     if(elapsed>2000){return;}
     if(elapsed<0)elapsed=0;
-    targetMs=rawPosMs+elapsed;
+    targetMs=rawPosMs+elapsed-btDelayMs;
   }else{
     log('SERVER_MS INVALID: '+serverMs+' nowMs='+nowMs+' diff='+Math.abs(nowMs-serverMs));
   }
@@ -1082,6 +1112,55 @@ document.getElementById("applyAP").addEventListener("click", async () => {
   btn.disabled = false; btn.textContent = "Save & Restart AP";
 });
 
+
+// ── BT Speaker Delay Profile UI ──────────────────────────────────────
+const btProfileSelect=document.getElementById('btProfileSelect');
+const btDelayDisplay=document.getElementById('btDelayDisplay');
+const btDelayDebug=document.getElementById('btDelay');
+
+function loadBTProfiles(){
+  try{
+    const raw=localStorage.getItem(BT_PROFILES_KEY);
+    if(raw)return JSON.parse(raw);
+  }catch(e){}
+  return {activeProfile:'',profiles:{}};
+}
+
+function refreshBTProfileUI(){
+  const data=loadBTProfiles();
+  btProfileSelect.innerHTML='<option value="">None</option>';
+  Object.keys(data.profiles).sort().forEach(name=>{
+    const opt=document.createElement('option');
+    opt.value=name;
+    opt.textContent=name+' ('+data.profiles[name].delayMs+'ms)';
+    btProfileSelect.appendChild(opt);
+  });
+  if(data.activeProfile&&data.profiles[data.activeProfile]){
+    btProfileSelect.value=data.activeProfile;
+    btDelayMs=Number(data.profiles[data.activeProfile].delayMs)||0;
+  }else{
+    btDelayMs=0;
+  }
+  btDelayDisplay.textContent=btDelayMs;
+  btDelayDebug.textContent=btDelayMs;
+}
+
+btProfileSelect.addEventListener('change',()=>{
+  const data=loadBTProfiles();
+  const name=btProfileSelect.value;
+  if(name&&data.profiles[name]){
+    btDelayMs=Number(data.profiles[name].delayMs)||0;
+    data.activeProfile=name;
+  }else{
+    btDelayMs=0;
+    data.activeProfile='';
+  }
+  try{localStorage.setItem(BT_PROFILES_KEY,JSON.stringify(data));}catch(e){}
+  btDelayDisplay.textContent=btDelayMs;
+  btDelayDebug.textContent=btDelayMs;
+});
+
+refreshBTProfileUI();
 
 })();
 </script>
