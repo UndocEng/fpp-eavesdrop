@@ -76,6 +76,9 @@ switch ($action) {
   case 'bt_status':
     echo json_encode(btStatus());
     break;
+  case 'bt_volume':
+    echo json_encode(btVolume(intval($_POST['volume'] ?? 75)));
+    break;
   default:
     echo json_encode(["success" => false, "error" => "Unknown action"]);
 }
@@ -985,11 +988,34 @@ function btStatus() {
     }
   }
 
+  // Get current volume if any BT device is connected
+  $volume = null;
+  if (count($connected) > 0) {
+    exec("sudo -u fpp pactl get-sink-volume @DEFAULT_SINK@ 2>&1", $volOut);
+    foreach ($volOut as $vl) {
+      if (preg_match('/(\d+)%/', $vl, $vm)) {
+        $volume = intval($vm[1]);
+        break;
+      }
+    }
+  }
+
   return [
     "success" => true,
     "available" => $available,
     "powered" => $powered,
     "connected" => $connected,
-    "count" => count($connected)
+    "count" => count($connected),
+    "volume" => $volume
+  ];
+}
+
+
+function btVolume($vol) {
+  $vol = max(0, min(100, $vol));
+  exec("sudo -u fpp pactl set-sink-volume @DEFAULT_SINK@ " . $vol . "% 2>&1", $out, $ret);
+  return [
+    "success" => ($ret === 0),
+    "volume" => $vol
   ];
 }

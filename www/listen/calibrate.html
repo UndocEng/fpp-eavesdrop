@@ -170,6 +170,13 @@
       Connect a BT speaker directly to the Raspberry Pi for audio output.
     </p>
     <div id="btStatusLine" style="font-size:13px;color:var(--muted);margin-bottom:8px;">Checking...</div>
+    <div id="btVolumeWrap" style="display:none;margin-bottom:12px;">
+      <p style="margin:0 0 6px;font-size:14px;color:var(--muted);">Volume</p>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <input type="range" id="btVolumeSlider" min="0" max="100" step="5" value="75" style="flex:1;">
+        <span id="btVolumeVal" style="min-width:40px;text-align:right;font-size:14px;">75%</span>
+      </div>
+    </div>
     <button id="btScanBtn">Scan for Devices</button>
     <div id="btDevices" style="margin-top:10px;"></div>
     <div id="btStatus" class="status-msg"></div>
@@ -532,25 +539,46 @@ const btScanBtn = document.getElementById('btScanBtn');
 const btDevices = document.getElementById('btDevices');
 const btStatusEl = document.getElementById('btStatus');
 const btStatusLine = document.getElementById('btStatusLine');
+const btVolumeWrap = document.getElementById('btVolumeWrap');
+const btVolumeSlider = document.getElementById('btVolumeSlider');
+const btVolumeVal = document.getElementById('btVolumeVal');
+
+let volTimeout = null;
+btVolumeSlider.addEventListener('input', () => {
+  btVolumeVal.textContent = btVolumeSlider.value + '%';
+  clearTimeout(volTimeout);
+  volTimeout = setTimeout(() => {
+    post('bt_volume', { volume: btVolumeSlider.value });
+  }, 150);
+});
 
 function refreshBTStatus() {
   post('bt_status', {}).then(res => {
     if (!res.success) {
       btStatusLine.textContent = 'Bluetooth unavailable';
+      btVolumeWrap.style.display = 'none';
       return;
     }
     if (!res.available) {
       btStatusLine.textContent = 'No Bluetooth adapter detected';
       btScanBtn.disabled = true;
+      btVolumeWrap.style.display = 'none';
       return;
     }
     if (!res.powered) {
       btStatusLine.textContent = 'Bluetooth adapter off (will power on when scanning)';
+      btVolumeWrap.style.display = 'none';
     } else if (res.count > 0) {
       const names = res.connected.map(d => d.name).join(', ');
       btStatusLine.innerHTML = '<span style="color:var(--ok);">Connected:</span> ' + escHtml(names);
+      btVolumeWrap.style.display = 'block';
+      if (res.volume !== null && res.volume !== undefined) {
+        btVolumeSlider.value = res.volume;
+        btVolumeVal.textContent = res.volume + '%';
+      }
     } else {
       btStatusLine.textContent = 'Bluetooth on, no devices connected';
+      btVolumeWrap.style.display = 'none';
     }
 
     // Show connected devices with disconnect buttons
@@ -567,6 +595,7 @@ function refreshBTStatus() {
     }
   }).catch(() => {
     btStatusLine.textContent = 'Could not check BT status';
+    btVolumeWrap.style.display = 'none';
   });
 }
 
