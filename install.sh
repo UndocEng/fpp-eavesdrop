@@ -154,6 +154,8 @@ www-data ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop hostapd
 www-data ALL=(ALL) NOPASSWD: /bin/cp /tmp/fseq_* /home/fpp/media/sequences/_bt_cal.fseq
 www-data ALL=(ALL) NOPASSWD: /bin/chown fpp\:fpp /home/fpp/media/sequences/_bt_cal.fseq
 www-data ALL=(ALL) NOPASSWD: /bin/rm -f /home/fpp/media/sequences/_bt_cal.fseq
+# Allow www-data to query WiFi station info
+www-data ALL=(ALL) NOPASSWD: /sbin/iw dev * station dump
 # Allow www-data to manage Bluetooth devices
 www-data ALL=(ALL) NOPASSWD: /usr/bin/bluetoothctl
 EOF

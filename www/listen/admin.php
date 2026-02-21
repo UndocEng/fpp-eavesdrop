@@ -61,6 +61,9 @@ switch ($action) {
   case 'cleanup_cal_fseq':
     echo json_encode(cleanupCalFSEQ());
     break;
+  case 'get_channel_outputs':
+    echo json_encode(getChannelOutputs());
+    break;
   case 'bt_scan':
     echo json_encode(btScan());
     break;
@@ -110,7 +113,7 @@ function startSequence($name) {
   if ($name === '') {
     return ["success" => false, "error" => "Nothing selected"];
   }
-  // "Start Playlist" works for both playlists and .fseq sequences
+  // Start Playlist works for both playlist names and .fseq filenames
   return sendFPPCommand([
     "command" => "Start Playlist",
     "args" => [$name]
@@ -683,6 +686,36 @@ function getAPClients() {
     }
   }
 
+  // Parse iw station dump for signal/bitrate/tx_failed per MAC
+  $stationInfo = [];
+  $output = [];
+  exec("sudo /sbin/iw dev " . escapeshellarg($iface) . " station dump 2>/dev/null", $output);
+  $curMac = null;
+  foreach ($output as $line) {
+    if (preg_match('/^Station\s+([0-9a-f:]{17})/i', $line, $m)) {
+      $curMac = strtolower($m[1]);
+      $stationInfo[$curMac] = [
+        "signal" => null,
+        "tx_bitrate" => null,
+        "rx_bitrate" => null,
+        "tx_failed" => null,
+        "inactive_ms" => null
+      ];
+    } elseif ($curMac !== null) {
+      $t = trim($line);
+      if (preg_match('/^signal:\s*(-?\d+)/', $t, $m))
+        $stationInfo[$curMac]["signal"] = intval($m[1]);
+      elseif (preg_match('/^tx bitrate:\s*([\d.]+)\s*MBit/', $t, $m))
+        $stationInfo[$curMac]["tx_bitrate"] = floatval($m[1]);
+      elseif (preg_match('/^rx bitrate:\s*([\d.]+)\s*MBit/', $t, $m))
+        $stationInfo[$curMac]["rx_bitrate"] = floatval($m[1]);
+      elseif (preg_match('/^tx failed:\s*(\d+)/', $t, $m))
+        $stationInfo[$curMac]["tx_failed"] = intval($m[1]);
+      elseif (preg_match('/^inactive time:\s*(\d+)/', $t, $m))
+        $stationInfo[$curMac]["inactive_ms"] = intval($m[1]);
+    }
+  }
+
   // Read AP interface ARP table from /proc/net/arp
   $arp = @file("/proc/net/arp", FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
   if ($arp !== false) {
@@ -700,6 +733,10 @@ function getAPClients() {
         if (isset($leaseMap[$mac])) {
           $client["hostname"] = $leaseMap[$mac]["hostname"];
         }
+        // Merge station info if available
+        if (isset($stationInfo[$mac])) {
+          $client = array_merge($client, $stationInfo[$mac]);
+        }
         $clients[] = $client;
       }
     }
@@ -709,14 +746,46 @@ function getAPClients() {
 }
 
 
+// ── Channel Outputs ──────────────────────────────────────────────────
+
+function getChannelOutputs() {
+  $ctx = stream_context_create(['http' => ['timeout' => 2.0]]);
+  $result = @file_get_contents('http://127.0.0.1/api/channel/output/universeOutputs', false, $ctx);
+  if ($result === false) {
+    return ["success" => false, "error" => "Cannot reach FPP API"];
+  }
+  $data = json_decode($result, true);
+  if (!is_array($data) || !isset($data['channelOutputs'])) {
+    return ["success" => false, "error" => "Invalid API response"];
+  }
+
+  $outputs = [];
+  foreach ($data['channelOutputs'] as $group) {
+    if (empty($group['enabled']) || empty($group['universes'])) continue;
+    foreach ($group['universes'] as $uni) {
+      $outputs[] = [
+        'description' => $uni['description'] ?? '',
+        'startChannel' => intval($uni['startChannel'] ?? 1),
+        'channelCount' => intval($uni['channelCount'] ?? 512),
+        'address' => $uni['address'] ?? '',
+        'active' => !empty($uni['active']),
+        'id' => intval($uni['id'] ?? 0)
+      ];
+    }
+  }
+
+  return ["success" => true, "outputs" => $outputs];
+}
+
+
 // ── FSEQ Calibration ──────────────────────────────────────────────────
 
 function generateCalFSEQ($startCh, $chCount, $flashFrames) {
   if ($startCh < 1 || $startCh > 32768) {
     return ["success" => false, "error" => "Start channel must be 1-32768"];
   }
-  if ($chCount < 1 || $chCount > 16) {
-    return ["success" => false, "error" => "Channel count must be 1-16"];
+  if ($chCount < 1 || $chCount > 512) {
+    return ["success" => false, "error" => "Channel count must be 1-512"];
   }
   if ($flashFrames < 1 || $flashFrames > 25) {
     return ["success" => false, "error" => "Flash frames must be 1-25"];

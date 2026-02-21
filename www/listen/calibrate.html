@@ -77,20 +77,14 @@
     </p>
   </div>
 
-  <!-- Card 1: Test Channel Selection -->
+  <!-- Card 1: Test Sequence -->
   <div class="card">
     <h3 class="section-title">Test Sequence</h3>
     <div class="field-group" style="margin-top:0;">
-      <p>Universe</p>
-      <input type="number" id="universe" value="1" min="1" max="64" />
-    </div>
-    <div class="field-group">
-      <p>Start Channel (within universe, 1-512)</p>
-      <input type="number" id="startCh" value="1" min="1" max="512" />
-    </div>
-    <div class="field-group">
-      <p>Channel Count (e.g. 3 for RGB white flash)</p>
-      <input type="number" id="chCount" value="3" min="1" max="16" />
+      <p>Output Device</p>
+      <select id="outputSelect">
+        <option value="">Loading outputs...</option>
+      </select>
     </div>
     <div class="field-group">
       <p>Flash Duration</p>
@@ -102,8 +96,8 @@
     </div>
     <button id="genBtn" style="margin-top:14px;">Generate Test Sequence</button>
     <div id="genStatus" class="status-msg"></div>
-    <p class="small">Creates a 15-second FSEQ that flashes your selected channels every 1 second.
-      Use this to calibrate the delay between your BT speaker and the lights.</p>
+    <p class="small">Creates a 15-second FSEQ that flashes the selected output every 1 second.
+      Only <b>active</b> outputs from your FPP channel configuration are shown.</p>
   </div>
 
   <!-- Card 2: Calibration Runner -->
@@ -124,8 +118,8 @@
 
     <p class="small">
       <b>How to calibrate:</b> Start the test sequence, then adjust the slider until the audio click
-      lines up with the light flash. The click plays through your phone speaker / BT device;
-      the lights flash on your E1.31 output. Slide right to delay the click (if lights fire first).
+      lines up with the light flash. Increase the value if you see the flash before hearing the click.
+      The slider compensates for Bluetooth audio delay by playing the click earlier.
     </p>
 
     <div style="margin-top:12px;">
@@ -135,7 +129,7 @@
     </div>
 
     <div id="debugBox" class="box hidden">
-      <div><b>WebSocket:</b> <span id="wsState">-</span></div>
+      <div><b>Transport:</b> <span id="wsState">-</span></div>
       <div><b>Clock Offset:</b> <span id="clockOffset">-</span> ms</div>
       <div><b>FPP State:</b> <span id="fppState">-</span></div>
       <div><b>FPP Position:</b> <span id="fppPos">-</span> ms</div>
@@ -195,8 +189,12 @@
 
 const BT_PROFILES_KEY = 'fpp-bt-profiles';
 const ADMIN_URL = 'admin.php';
+const STATUS_URL = 'status.php';
+const POLL_INTERVAL = 200;  // HTTP fallback poll interval
+const TICK_INTERVAL = 50;   // Click scheduler tick interval
 
 // --- DOM References ---
+const outputSelect = document.getElementById('outputSelect');
 const genBtn = document.getElementById('genBtn');
 const genStatus = document.getElementById('genStatus');
 const startBtn = document.getElementById('startBtn');
@@ -223,14 +221,385 @@ const clickCountEl = document.getElementById('clickCount');
 // --- State ---
 let ws = null;
 let audioCtx = null;
-let clockOffset = 0;
-let clockOffsetValid = false;
-let pingInterval = null;
-let lastFlashSec = -1;
-let clickCount = 0;
 let running = false;
 
-// --- Profiles ---
+// Clock offset (NTP-style)
+let clockOffset = 0;
+let clockOffsetValid = false;
+let offsetHistory = [];
+const OFFSET_HISTORY_SIZE = 5;
+
+// Position tracking (interpolated between updates)
+let fppPosMs = 0;       // Last known FPP position
+let fppPosAt = 0;       // Date.now() when position was captured
+let fppPlaying = false;  // Is FPP currently playing?
+
+// Click scheduler
+let scheduledFlashSec = -1;
+let clickCount = 0;
+let tickTimer = null;
+let pollTimer = null;
+let wsPingTimer = null;
+
+// --- Helpers ---
+function showStatus(el, msg, ok) {
+  el.textContent = msg;
+  el.className = 'status-msg ' + (ok ? 'success' : 'error');
+  el.style.display = 'block';
+  setTimeout(() => { el.style.display = 'none'; }, 5000);
+}
+
+function post(action, params) {
+  const body = new URLSearchParams({ action, ...params });
+  return fetch(ADMIN_URL, { method: 'POST', body }).then(r => r.json());
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// =============================================================================
+// CARD 1: Output Channel Selection + Sequence Generation
+// =============================================================================
+
+function loadOutputs() {
+  post('get_channel_outputs', {}).then(res => {
+    if (!res.success) {
+      outputSelect.innerHTML = '<option value="">Failed to load outputs</option>';
+      return;
+    }
+    const active = res.outputs.filter(o => o.active);
+    const inactive = res.outputs.filter(o => !o.active);
+    let html = '';
+
+    if (active.length === 0 && inactive.length === 0) {
+      html = '<option value="">No outputs configured in FPP</option>';
+    } else if (active.length === 0) {
+      html = '<option value="">No active outputs (enable outputs in FPP)</option>';
+      inactive.forEach(o => {
+        const end = o.startChannel + o.channelCount - 1;
+        html += '<option value="' + o.startChannel + ':' + o.channelCount
+          + '" style="color:#999;">' + escHtml(o.description)
+          + ' (Ch ' + o.startChannel + '-' + end + ') [inactive]</option>';
+      });
+    } else {
+      // Active outputs
+      active.forEach(o => {
+        const end = o.startChannel + o.channelCount - 1;
+        html += '<option value="' + o.startChannel + ':' + o.channelCount + '">'
+          + escHtml(o.description) + ' (Ch ' + o.startChannel + '-' + end + ')</option>';
+      });
+      // "All Active" option
+      if (active.length > 1) {
+        const minCh = Math.min(...active.map(o => o.startChannel));
+        const maxCh = Math.max(...active.map(o => o.startChannel + o.channelCount - 1));
+        const totalCount = maxCh - minCh + 1;
+        html += '<option value="' + minCh + ':' + totalCount
+          + '">All Active Outputs (Ch ' + minCh + '-' + maxCh + ')</option>';
+      }
+    }
+    outputSelect.innerHTML = html;
+  }).catch(() => {
+    outputSelect.innerHTML = '<option value="">Network error loading outputs</option>';
+  });
+}
+
+genBtn.addEventListener('click', () => {
+  const val = outputSelect.value;
+  if (!val) {
+    showStatus(genStatus, 'Select an output device first', false);
+    return;
+  }
+  const parts = val.split(':');
+  const startCh = parseInt(parts[0]);
+  const chCount = parseInt(parts[1]);
+
+  genBtn.disabled = true;
+  genBtn.textContent = 'Generating...';
+  post('generate_cal_fseq', {
+    start_ch: startCh,
+    ch_count: chCount,
+    flash_frames: document.getElementById('flashFrames').value
+  }).then(res => {
+    genBtn.disabled = false;
+    genBtn.textContent = 'Generate Test Sequence';
+    if (res.success) {
+      showStatus(genStatus, 'Sequence generated: ' + res.file + ' (' + res.channels + ', ' + res.duration + ')', true);
+    } else {
+      showStatus(genStatus, res.error || 'Generation failed', false);
+    }
+  }).catch(() => {
+    genBtn.disabled = false;
+    genBtn.textContent = 'Generate Test Sequence';
+    showStatus(genStatus, 'Network error', false);
+  });
+});
+
+// =============================================================================
+// CARD 2: Calibration Runner
+// =============================================================================
+
+delaySlider.addEventListener('input', () => {
+  delayVal.textContent = delaySlider.value;
+});
+
+debugCheck.addEventListener('change', () => {
+  debugBox.classList.toggle('hidden', !debugCheck.checked);
+});
+
+// --- Web Audio Click ---
+function ensureAudioCtx() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function playClick() {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'sine';
+  osc.frequency.value = 1000;
+  gain.gain.setValueAtTime(0.6, now);
+  gain.gain.exponentialRampToValueAtTime(0.001, now + 0.015);
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start(now);
+  osc.stop(now + 0.02);
+}
+
+// --- Clock Offset (NTP-style) ---
+function updateClockOffset(serverMs, clientSendMs, rtt) {
+  const offset = serverMs - clientSendMs - Math.round(rtt / 2);
+  offsetHistory.push(offset);
+  if (offsetHistory.length > OFFSET_HISTORY_SIZE) offsetHistory.shift();
+  // Use median for robustness against outliers
+  const sorted = [...offsetHistory].sort((a, b) => a - b);
+  clockOffset = sorted[Math.floor(sorted.length / 2)];
+  clockOffsetValid = offsetHistory.length >= 2;
+  clockOffsetEl.textContent = Math.round(clockOffset);
+}
+
+// --- Position Tracking ---
+function getCurrentPosMs() {
+  if (!fppPlaying) return fppPosMs;
+  return fppPosMs + (Date.now() - fppPosAt);
+}
+
+function updatePosition(msg) {
+  const now = Date.now();
+  const serverMs = Number(msg.server_ms || 0);
+  const rawPosMs = Number(msg.pos_ms || 0);
+
+  // Compute elapsed time since server captured this position
+  let elapsed = 0;
+  if (clockOffsetValid && serverMs > 0) {
+    elapsed = (now + clockOffset) - serverMs;
+  } else if (serverMs > 0) {
+    elapsed = now - serverMs;
+  }
+  if (elapsed < 0) elapsed = 0;
+  if (elapsed > 2000) elapsed = 0; // stale, ignore
+
+  fppPosMs = rawPosMs + elapsed;
+  fppPosAt = now;
+  fppPlaying = (msg.state === 'play');
+
+  // Update debug display
+  fppStateEl.textContent = msg.state || '-';
+  fppPosEl.textContent = Math.round(fppPosMs);
+}
+
+// --- Click Scheduler (tick-based, precise setTimeout) ---
+function startTick() {
+  if (tickTimer) return;
+  tickTimer = setInterval(tick, TICK_INTERVAL);
+}
+
+function stopTick() {
+  if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
+  scheduledFlashSec = -1;
+}
+
+function tick() {
+  if (!running || !fppPlaying) return;
+  const posMs = getCurrentPosMs();
+  if (posMs < 0) return;
+
+  const currentSec = Math.floor(posMs / 1000);
+  const nextSec = currentSec + 1;
+  const nextFlashMs = nextSec * 1000;
+  const msUntilFlash = nextFlashMs - posMs;
+
+  // Update debug
+  nextFlashEl.textContent = nextFlashMs + 'ms (in ' + Math.round(msUntilFlash) + 'ms)';
+
+  // Schedule click for next second boundary (if not already scheduled)
+  if (nextSec > scheduledFlashSec && msUntilFlash > 0 && msUntilFlash < 800) {
+    scheduledFlashSec = nextSec;
+    const sliderMs = parseInt(delaySlider.value) || 0;
+    // Fire click early by sliderMs to compensate for BT latency
+    const clickDelay = Math.max(0, msUntilFlash - sliderMs);
+    setTimeout(() => { fireClick(); }, clickDelay);
+  }
+
+  // Also check if we just crossed a boundary (first tick after start)
+  if (currentSec >= 0 && currentSec > scheduledFlashSec) {
+    const fractMs = posMs - (currentSec * 1000);
+    if (fractMs < 100) {
+      scheduledFlashSec = currentSec;
+      fireClick();
+    }
+  }
+}
+
+function fireClick() {
+  // Flash the dot indicator (represents the light flash)
+  flashDot.classList.add('on');
+  setTimeout(() => flashDot.classList.remove('on'), 120);
+
+  // Play the audio click
+  playClick();
+  clickCount++;
+  clickCountEl.textContent = clickCount;
+}
+
+// --- WebSocket Connection ---
+function connectWS() {
+  if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) return;
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const url = proto + '://' + location.hostname + '/ws';
+  try { ws = new WebSocket(url); } catch (e) { startHttpPoll(); return; }
+  wsStateEl.textContent = 'connecting...';
+
+  ws.onopen = () => {
+    wsStateEl.textContent = 'WebSocket connected';
+    stopHttpPoll();
+    offsetHistory = [];
+    clockOffsetValid = false;
+    // Burst pings for fast clock calibration
+    sendPing();
+    setTimeout(sendPing, 200);
+    setTimeout(sendPing, 400);
+    setTimeout(sendPing, 600);
+    setTimeout(sendPing, 800);
+    if (wsPingTimer) clearInterval(wsPingTimer);
+    wsPingTimer = setInterval(sendPing, 1000);
+  };
+
+  ws.onmessage = (evt) => {
+    try {
+      const msg = JSON.parse(evt.data);
+      if (msg.type === 'pong') {
+        const now = Date.now();
+        const rtt = now - msg.client_ts;
+        if (rtt > 0 && rtt < 500) {
+          updateClockOffset(msg.server_ts, msg.client_ts, rtt);
+        }
+        return;
+      }
+      // FPP state broadcast
+      if (msg.state !== undefined) {
+        updatePosition(msg);
+      }
+    } catch (e) {}
+  };
+
+  ws.onclose = () => {
+    wsStateEl.textContent = 'WS disconnected, HTTP fallback';
+    if (wsPingTimer) { clearInterval(wsPingTimer); wsPingTimer = null; }
+    startHttpPoll();
+    if (running) setTimeout(connectWS, 2000);
+  };
+
+  ws.onerror = () => { ws.close(); };
+}
+
+function sendPing() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'ping', client_ts: Date.now() }));
+  }
+}
+
+// --- HTTP Polling Fallback ---
+function startHttpPoll() {
+  if (pollTimer) return;
+  pollTimer = setInterval(pollOnce, POLL_INTERVAL);
+  pollOnce();
+}
+
+function stopHttpPoll() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+async function pollOnce() {
+  const t0 = Date.now();
+  try {
+    const r = await fetch(STATUS_URL + '?ts=' + t0, { cache: 'no-store' });
+    if (!r.ok) return;
+    const msg = await r.json();
+    const t1 = Date.now();
+    const rtt = t1 - t0;
+    if (msg.server_ms && rtt > 0 && rtt < 500) {
+      updateClockOffset(msg.server_ms, t0, rtt);
+    }
+    if (msg.state !== undefined) {
+      updatePosition(msg);
+    }
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      wsStateEl.textContent = 'HTTP poll (' + rtt + 'ms)';
+    }
+  } catch (e) {}
+}
+
+// --- Start / Stop ---
+startBtn.addEventListener('click', () => {
+  ensureAudioCtx();
+  running = true;
+  scheduledFlashSec = -1;
+  clickCount = 0;
+  clickCountEl.textContent = '0';
+
+  // Start the calibration sequence on FPP
+  post('start_sequence', { sequence: '_bt_cal.fseq' }).then(res => {
+    if (!res.success) {
+      showStatus(genStatus, 'Start failed: ' + (res.error || 'Generate the test sequence first'), false);
+    }
+  }).catch(() => {});
+
+  // Connect transports
+  connectWS();
+  startHttpPoll();
+
+  // Start the click scheduler
+  startTick();
+});
+
+stopBtn.addEventListener('click', () => {
+  running = false;
+  scheduledFlashSec = -1;
+  fppPlaying = false;
+
+  post('stop_playback', {}).catch(() => {});
+
+  stopTick();
+  stopHttpPoll();
+  if (ws) { ws.close(); ws = null; }
+  if (wsPingTimer) { clearInterval(wsPingTimer); wsPingTimer = null; }
+  wsStateEl.textContent = '-';
+  fppStateEl.textContent = '-';
+  fppPosEl.textContent = '-';
+  nextFlashEl.textContent = '-';
+});
+
+// =============================================================================
+// CARD 3: Profile Management
+// =============================================================================
+
 function loadProfiles() {
   try {
     const raw = localStorage.getItem(BT_PROFILES_KEY);
@@ -258,234 +627,6 @@ function refreshProfileUI() {
     delayVal.textContent = delaySlider.value;
   }
 }
-
-// --- Status helpers ---
-function showStatus(el, msg, ok) {
-  el.textContent = msg;
-  el.className = 'status-msg ' + (ok ? 'success' : 'error');
-  el.style.display = 'block';
-  setTimeout(() => { el.style.display = 'none'; }, 5000);
-}
-
-function post(action, params) {
-  const body = new URLSearchParams({ action, ...params });
-  return fetch(ADMIN_URL, { method: 'POST', body }).then(r => r.json());
-}
-
-function escHtml(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
-
-// =============================================================================
-// CARD 1: Test Sequence Generation
-// =============================================================================
-
-genBtn.addEventListener('click', () => {
-  genBtn.disabled = true;
-  genBtn.textContent = 'Generating...';
-  const universe = parseInt(document.getElementById('universe').value) || 1;
-  const chInUni = parseInt(document.getElementById('startCh').value) || 1;
-  const absCh = (universe - 1) * 512 + chInUni;
-  post('generate_cal_fseq', {
-    start_ch: absCh,
-    ch_count: document.getElementById('chCount').value,
-    flash_frames: document.getElementById('flashFrames').value
-  }).then(res => {
-    genBtn.disabled = false;
-    genBtn.textContent = 'Generate Test Sequence';
-    if (res.success) {
-      showStatus(genStatus, 'Sequence generated: ' + res.file + ' (' + res.channels + ', ' + res.duration + ')', true);
-    } else {
-      showStatus(genStatus, res.error || 'Generation failed', false);
-    }
-  }).catch(() => {
-    genBtn.disabled = false;
-    genBtn.textContent = 'Generate Test Sequence';
-    showStatus(genStatus, 'Network error', false);
-  });
-});
-
-// =============================================================================
-// CARD 2: Calibration Runner (WebSocket + Web Audio)
-// =============================================================================
-
-delaySlider.addEventListener('input', () => {
-  delayVal.textContent = delaySlider.value;
-});
-
-debugCheck.addEventListener('change', () => {
-  debugBox.classList.toggle('hidden', !debugCheck.checked);
-});
-
-// --- Web Audio Click ---
-function ensureAudioCtx() {
-  if (!audioCtx) {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  }
-  if (audioCtx.state === 'suspended') audioCtx.resume();
-}
-
-function playClick() {
-  if (!audioCtx) return;
-  const osc = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
-  osc.type = 'sine';
-  osc.frequency.value = 1000;
-  gain.gain.setValueAtTime(0.6, audioCtx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.01);
-  osc.connect(gain);
-  gain.connect(audioCtx.destination);
-  osc.start();
-  osc.stop(audioCtx.currentTime + 0.015);
-}
-
-// --- WebSocket Connection ---
-function connectWS() {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const url = proto + '://' + location.host + '/ws';
-  ws = new WebSocket(url);
-  wsStateEl.textContent = 'connecting...';
-
-  ws.onopen = () => {
-    wsStateEl.textContent = 'connected';
-    pingInterval = setInterval(() => {
-      if (ws && ws.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'ping', client_ts: Date.now() }));
-      }
-    }, 1000);
-  };
-
-  ws.onmessage = (evt) => {
-    try {
-      const msg = JSON.parse(evt.data);
-
-      // Pong — clock offset estimation
-      if (msg.type === 'pong') {
-        const now = Date.now();
-        const rtt = now - msg.client_ts;
-        clockOffset = msg.server_ts - msg.client_ts - Math.round(rtt / 2);
-        clockOffsetValid = true;
-        clockOffsetEl.textContent = clockOffset;
-        return;
-      }
-
-      // FPP state broadcast
-      if (msg.state) {
-        fppStateEl.textContent = msg.state;
-        fppPosEl.textContent = msg.pos_ms || 0;
-
-        if (msg.state === 'play' && running) {
-          scheduleClick(msg);
-        }
-      }
-    } catch (e) {}
-  };
-
-  ws.onclose = () => {
-    wsStateEl.textContent = 'disconnected';
-    clearInterval(pingInterval);
-    if (running) setTimeout(connectWS, 2000);
-  };
-
-  ws.onerror = () => { ws.close(); };
-}
-
-// --- Flash Detection + Click Scheduling ---
-function scheduleClick(msg) {
-  const nowMs = Date.now();
-  const serverMs = msg.server_ms || 0;
-
-  // Compute current FPP position with clock offset + elapsed
-  let elapsed = 0;
-  if (clockOffsetValid) {
-    elapsed = (nowMs + clockOffset) - serverMs;
-  } else {
-    elapsed = nowMs - serverMs;
-  }
-  if (elapsed < 0) elapsed = 0;
-  if (elapsed > 2000) return;
-
-  const currentPosMs = (msg.pos_ms || 0) + elapsed;
-  const currentSec = Math.floor(currentPosMs / 1000);
-  const fractMs = currentPosMs % 1000;
-
-  // Next flash is at the next second boundary
-  const nextFlashMs = (currentSec + 1) * 1000;
-  const msUntilFlash = nextFlashMs - currentPosMs;
-  nextFlashEl.textContent = nextFlashMs + 'ms (in ' + Math.round(msUntilFlash) + 'ms)';
-
-  // Only fire once per second
-  if (currentSec === lastFlashSec) return;
-
-  // Just crossed a second boundary (within 300ms after)
-  if (fractMs < 300) {
-    lastFlashSec = currentSec;
-    fireClick();
-  } else if (msUntilFlash <= 300 && msUntilFlash > 0) {
-    // Approaching next boundary — schedule ahead
-    const nextSec = currentSec + 1;
-    if (nextSec !== lastFlashSec) {
-      lastFlashSec = nextSec;
-      const delayMs = parseInt(delaySlider.value) || 0;
-      setTimeout(() => { fireClick(); }, msUntilFlash);
-    }
-  }
-}
-
-function fireClick() {
-  const delayMs = parseInt(delaySlider.value) || 0;
-
-  // Flash the dot indicator immediately (represents the light flash)
-  flashDot.classList.add('on');
-  setTimeout(() => flashDot.classList.remove('on'), 100);
-
-  // Schedule the audio click with the BT delay offset
-  if (delayMs > 0) {
-    setTimeout(playClick, delayMs);
-  } else {
-    playClick();
-  }
-  clickCount++;
-  clickCountEl.textContent = clickCount;
-}
-
-// --- Start / Stop ---
-startBtn.addEventListener('click', () => {
-  ensureAudioCtx();
-  running = true;
-  lastFlashSec = -1;
-  clickCount = 0;
-  clickCountEl.textContent = '0';
-
-  // Start the calibration sequence on FPP
-  post('start_sequence', { sequence: '_bt_cal.fseq' }).then(res => {
-    if (!res.success) {
-      showStatus(genStatus, 'Start failed: ' + (res.error || 'Generate the test sequence first'), false);
-    }
-  }).catch(() => {});
-
-  // Connect WebSocket if not already
-  if (!ws || ws.readyState !== 1) {
-    connectWS();
-  }
-});
-
-stopBtn.addEventListener('click', () => {
-  running = false;
-  lastFlashSec = -1;
-
-  post('stop_playback', {}).catch(() => {});
-
-  if (ws) { ws.close(); ws = null; }
-  clearInterval(pingInterval);
-  wsStateEl.textContent = '-';
-});
-
-// =============================================================================
-// CARD 3: Profile Management
-// =============================================================================
 
 profileSelect.addEventListener('change', () => {
   const data = loadProfiles();
@@ -556,11 +697,9 @@ btVolumeSlider.addEventListener('input', () => {
 function refreshBTStatus() {
   post('bt_status', {}).then(res => {
     if (!res.success || !res.usb_adapter) {
-      // Hide the entire BT card if no USB adapter present
       btCard.style.display = 'none';
       return;
     }
-    // USB BT adapter detected — show the card
     btCard.style.display = '';
     if (!res.available) {
       btStatusLine.textContent = 'No Bluetooth adapter detected';
@@ -584,7 +723,6 @@ function refreshBTStatus() {
       btVolumeWrap.style.display = 'none';
     }
 
-    // Show connected devices with disconnect buttons
     if (res.connected && res.connected.length > 0) {
       let html = '';
       res.connected.forEach(d => {
@@ -636,7 +774,6 @@ btScanBtn.addEventListener('click', () => {
   });
 });
 
-// Expose BT actions globally for inline onclick
 window.pairBT = function(mac) {
   showStatus(btStatusEl, 'Pairing...', true);
   post('bt_pair', { mac }).then(res => {
@@ -664,6 +801,7 @@ window.disconnectBT = function(mac) {
 // INIT
 // =============================================================================
 
+loadOutputs();
 refreshProfileUI();
 refreshBTStatus();
 

@@ -1,5 +1,13 @@
 # FPP Admin Eavesdrop
 
+## Why a Single Board Show?
+
+With the rise of **WLED** and other smart LED controllers that have built-in support for receiving **E1.31** or **DDP** data over WiFi, it's becoming practical to run a small holiday light show entirely from a single Raspberry Pi. Instead of needing dedicated show controllers and proprietary hardware, a few WLED-flashed ESP32 devices and a Pi running Falcon Player can drive a small neighborhood display — sequences, audio, and pixel control all from one board.
+
+**Eavesdrop** makes this possible: the Pi runs the show and serves as the WiFi access point for your smart devices, while your phone becomes the show's audio output — synced to FPP's playback position. All the wonderful things FPP can do but now coupled with the ability to play audio from your phone/device. No internet connection, no cloud services, no extra hardware beyond what you already have.
+
+---
+
 A **show-owner admin tool** for Falcon Player (FPP). Runs on the master Pi and gives you full control: start/stop sequences and playlists, manage WiFi AP settings, and hear synchronized show audio on your phone — all from one page.
 
 > **Tested on FPP 9.4** (Raspberry Pi OS Bookworm). Should work on any FPP version that uses `/opt/fpp/www/` as its web root (FPP 6+).
