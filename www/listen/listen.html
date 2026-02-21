@@ -578,7 +578,7 @@ async function syncInner(msg){
     nowPlaying.classList.remove('hidden');
     trackName.textContent=msg.base+'.fseq';
     if(msg.mp3_url){
-      mediaFileEl.textContent=msg.mp3_url.split('/').pop();
+      mediaFileEl.textContent=decodeURIComponent(msg.mp3_url.split('/').pop());
     }else{
       mediaFileEl.textContent='No audio file found';
     }
@@ -646,7 +646,8 @@ async function syncInner(msg){
   const rawPosMs=Number(msg.pos_ms||0);
 
   let targetMs=rawPosMs;
-  const serverOk=Number.isFinite(serverMs)&&serverMs>1e12&&Math.abs(nowMs-serverMs)<300000;
+  const timeDiff=clockOffsetValid?Math.abs((nowMs+clockOffset)-serverMs):Math.abs(nowMs-serverMs);
+  const serverOk=Number.isFinite(serverMs)&&serverMs>1e12&&timeDiff<300000;
   if(serverOk){
     let elapsed;
     if(clockOffsetValid){
@@ -655,7 +656,8 @@ async function syncInner(msg){
       elapsed=nowMs-serverMs;
     }
     if(!Number.isFinite(elapsed))elapsed=0;
-    elapsed=clamp(elapsed,0,300);
+    if(elapsed>2000){return;}
+    if(elapsed<0)elapsed=0;
     targetMs=rawPosMs+elapsed;
   }else{
     log('SERVER_MS INVALID: '+serverMs+' nowMs='+nowMs+' diff='+Math.abs(nowMs-serverMs));

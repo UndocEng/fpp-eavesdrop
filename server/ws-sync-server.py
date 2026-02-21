@@ -6,7 +6,7 @@ FPP WebSocket Sync Beacon
 This is the server-side component of the FPP Eavesdrop sync system. It runs as
 a systemd service (ws-sync.service) on the Raspberry Pi and does three things:
 
-1. POLLS THE FPP API every 100ms to get the current playback state (playing/
+1. POLLS THE FPP API every 200ms to get the current playback state (playing/
    stopped/paused, which track, position in milliseconds, etc.).
 
 2. BROADCASTS that state to all connected WebSocket clients (phones). This is
@@ -53,7 +53,7 @@ except ImportError:
 FPP_API_URL = "http://127.0.0.1/api/fppd/status"  # FPP's local REST API
 WS_HOST = "0.0.0.0"           # Listen on all interfaces
 WS_PORT = 8080                 # Apache proxies /ws on port 80 to here
-POLL_INTERVAL_MS = 100         # Poll FPP API every 100ms -- fast enough for smooth sync
+POLL_INTERVAL_MS = 200         # Poll FPP API every 200ms — balances sync accuracy with Pi load
 MUSIC_DIR = Path("/home/fpp/media/music")  # Where FPP stores music files
 AUDIO_FORMATS = ["mp3", "m4a", "mp4", "aac", "ogg", "wav"]  # Supported audio formats
 SYNC_LOG_PATH = Path("/home/fpp/listen-sync/sync.log")  # Client sync report log
@@ -229,28 +229,31 @@ def parse_fpp_state(src, server_ms):
 
 
 async def broadcast(message):
-    """Send a JSON message to all connected WebSocket clients.
+    """Send a JSON message to all connected WebSocket clients concurrently.
 
-    Phones that have disconnected (but we haven't gotten the close event yet)
-    will throw ConnectionClosed -- we catch that and remove them from the set.
-    This runs every 100ms (on each FPP poll tick), so dead client cleanup
-    happens quickly.
+    Uses asyncio.gather so a slow client cannot delay messages to other clients.
+    With many phones on the AP, sequential sends can cause 200ms+ delays if one
+    phone is slow to ACK. Concurrent sends prevent this.
+    Dead connections (ConnectionClosed) are removed from the client set.
     """
     if not clients:
         return
     dead = set()
-    for ws in clients:
+
+    async def _send(ws):
         try:
             await ws.send(message)
         except websockets.ConnectionClosed:
             dead.add(ws)
         except Exception:
             dead.add(ws)
+
+    await asyncio.gather(*(_send(ws) for ws in list(clients)))
     clients.difference_update(dead)
 
 
 async def fpp_poll_loop():
-    """Main loop: poll FPP API every 100ms, broadcast state to all clients.
+    """Main loop: poll FPP API every 200ms, broadcast state to all clients.
 
     Timing note: server_ms is the midpoint of the API call (average of before
     and after timestamps). This is the best estimate of when pos_ms was valid.
@@ -279,7 +282,7 @@ async def fpp_poll_loop():
         if current_state:
             await broadcast(json.dumps(current_state))
 
-        # Sleep for remainder of the 100ms interval (minus time already spent)
+        # Sleep for remainder of the 200ms interval (minus time already spent)
         elapsed = time.time() - t_before
         sleep_s = max(0.01, (POLL_INTERVAL_MS / 1000.0) - elapsed)
         await asyncio.sleep(sleep_s)
@@ -302,7 +305,7 @@ async def handle_client(websocket, path=None):
 
     try:
         # Send current FPP state immediately so the client doesn't have to
-        # wait up to 100ms for the next broadcast tick
+        # wait up to 200ms for the next broadcast tick
         if current_state:
             await websocket.send(json.dumps(current_state))
 
