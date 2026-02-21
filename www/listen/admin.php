@@ -826,6 +826,31 @@ function btScan() {
   // Power on the adapter, scan for 10 seconds, then list devices
   exec("sudo /usr/bin/bluetoothctl power on 2>&1");
   exec("sudo /usr/bin/bluetoothctl --timeout 10 scan on 2>&1", $scanOut, $scanRet);
+
+  // Build a name lookup from scan output — bluetoothctl emits lines like:
+  //   [NEW] Device AA:BB:CC:DD:EE:FF SpeakerName
+  //   [CHG] Device AA:BB:CC:DD:EE:FF Name: SpeakerName
+  $scanNames = [];
+  foreach ($scanOut as $line) {
+    // [NEW] Device MAC Name  (name may be MAC-dashed initially)
+    if (preg_match('/\[NEW\]\s+Device\s+([0-9A-Fa-f:]{17})\s+(.+)$/', $line, $m)) {
+      $mac = $m[1];
+      $n   = trim($m[2]);
+      $macDashed = str_replace(':', '-', $mac);
+      if ($n !== $macDashed && $n !== $mac) {
+        $scanNames[$mac] = $n;
+      }
+    }
+    // [CHG] Device MAC Name: RealName  (resolved after discovery)
+    if (preg_match('/\[CHG\]\s+Device\s+([0-9A-Fa-f:]{17})\s+Name:\s+(.+)$/', $line, $m)) {
+      $scanNames[$m[1]] = trim($m[2]);
+    }
+    // [CHG] Device MAC Alias: RealName
+    if (preg_match('/\[CHG\]\s+Device\s+([0-9A-Fa-f:]{17})\s+Alias:\s+(.+)$/', $line, $m)) {
+      $scanNames[$m[1]] = trim($m[2]);
+    }
+  }
+
   exec("sudo /usr/bin/bluetoothctl devices 2>&1", $devOut, $devRet);
 
   $devices = [];
@@ -833,10 +858,14 @@ function btScan() {
     if (preg_match('/^Device\s+([0-9A-Fa-f:]{17})\s+(.+)$/', $line, $m)) {
       $mac  = $m[1];
       $name = trim($m[2]);
-
-      // bluetoothctl often returns MAC-with-dashes as the name for
-      // unresolved devices. Query 'info' to get the real friendly name.
       $macDashed = str_replace(':', '-', $mac);
+
+      // 1) Check scan output for a resolved name
+      if (($name === $macDashed || $name === $mac) && isset($scanNames[$mac])) {
+        $name = $scanNames[$mac];
+      }
+
+      // 2) Fall back to bluetoothctl info
       if ($name === $macDashed || $name === $mac) {
         $infoOut = [];
         exec("sudo /usr/bin/bluetoothctl info " . escapeshellarg($mac) . " 2>&1", $infoOut);
